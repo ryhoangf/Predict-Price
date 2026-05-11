@@ -64,6 +64,12 @@ tmp/
 temp/
 .cache/
 
+# --- Dữ liệu local / dump (mongodump/mysqldump → VPS, không commit) ---
+mongo_data/
+mongo_*.gz
+mysql_*.sql
+*.sql.gz
+
 # --- Spark / Hadoop (nếu sau này chạy local) ---
 metastore_db/
 spark-warehouse/
@@ -75,5 +81,6 @@ spark_apps/predictprice/NLP/layer3_bert_ner/
 # --- Thử nghiệm / notebook local (repo gốc) ---
 test/
 
-# --- Model / dữ liệu huấn luyện cục bộ (bỏ comment nếu muốn git nhẹ) ---
-# *.pkl
+# --- Model ML nặng (GitHub ~100MB/file; deploy artifact riêng) ---
+spark_apps/predictprice/models/*.pkl
+*.pkl
