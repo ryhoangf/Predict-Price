@@ -1,0 +1,29 @@
+{
+    "age_min": 0,
+    "age_max": 8,
+    "age_step": 1,
+    "reference_year": 2026,
+    "baseline_source": {
+      "min_listings_for_aggregate": 5
+    },
+    "baseline_defaults": {
+      "model_line": "",
+      "model_number": "",
+      "variant": "",
+      "condition": "Good",
+      "battery_percentage": 85.0,
+      "screen_condition": "clean",
+      "body_condition": "good",
+      "platform": "Mercari",
+      "storage": "64",
+      "ram": "3",
+      "has_box": true,
+      "has_charger": true,
+      "is_sim_free": 1,
+      "fully_functional": 1,
+      "has_scratches": 0,
+      "has_damage": 0,
+      "has_issues": 0
+    },
+    "disclaimer": "Mô phỏng theo mô hình SmartPricePredictor; cùng điều kiện tham chiếu; không phải giá thị trường thực từng ngày."
+  }

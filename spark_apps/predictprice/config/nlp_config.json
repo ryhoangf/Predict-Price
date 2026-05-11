@@ -1,0 +1,306 @@
+{
+  "negation_keywords": [
+    "なし",
+    "ありません",
+    "ゼロ",
+    "無",
+    "ない",
+    "不可",
+    "NG",
+    "付属しません"
+  ],
+  "condition_keywords": {
+    "scratches": [
+      "傷",
+      "キズ",
+      "スレ",
+      "擦れ",
+      "scratch"
+    ],
+    "cracks": [
+      "割れ",
+      "ひび",
+      "破損",
+      "crack",
+      "欠け"
+    ],
+    "battery": [
+      "バッテリー",
+      "最大容量",
+      "battery"
+    ]
+  },
+  "accessories": {
+    "box": [
+      "箱",
+      "元箱",
+      "box"
+    ],
+    "charger": [
+      "充電器",
+      "アダプタ",
+      "ACアダプター",
+      "charger"
+    ],
+    "cable": [
+      "ケーブル",
+      "コード",
+      "ライトニング",
+      "cable"
+    ],
+    "earphones": [
+      "イヤホン",
+      "イヤフォン",
+      "ヘッドホン",
+      "AirPods",
+      "EarPods",
+      "earphone"
+    ],
+    "complete_set": [
+      "完備",
+      "全て揃",
+      "一式",
+      "フルセット"
+    ]
+  },
+  "functional_issues": {
+    "face_id": [
+      "Face ID",
+      "FaceID",
+      "顔認証"
+    ],
+    "touch_id": [
+      "Touch ID",
+      "TouchID",
+      "指紋"
+    ],
+    "junk": [
+      "ジャンク",
+      "不具合",
+      "問題あり",
+      "故障",
+      "defect",
+      "ジャンク品"
+    ]
+  },
+  "brands": {
+    "Apple": [
+      "Apple",
+      "アップル",
+      "iPhone"
+    ],
+    "Samsung": [
+      "Samsung",
+      "サムスン",
+      "Galaxy"
+    ],
+    "Google": [
+      "Google",
+      "グーグル",
+      "Pixel"
+    ],
+    "Sony": [
+      "Sony",
+      "ソニー",
+      "Xperia"
+    ],
+    "Xiaomi": [
+      "Xiaomi",
+      "シャオミ",
+      "Redmi",
+      "Mi",
+      "POCO"
+    ],
+    "OPPO": [
+      "OPPO",
+      "オッポ"
+    ],
+    "SHARP": [
+      "SHARP",
+      "シャープ",
+      "AQUOS"
+    ],
+    "Huawei": [
+      "Huawei",
+      "ファーウェイ"
+    ],
+    "Motorola": [
+      "Motorola",
+      "モトローラ"
+    ],
+    "ASUS": [
+      "ASUS",
+      "エイスース"
+    ],
+    "Realme": [
+      "Realme",
+      "リアルミー"
+    ],
+    "motorola": [
+      "motorola"
+    ],
+    "MOTOROLA": [
+      "MOTOROLA"
+    ],
+    "SAMSUNG": [
+      "SAMSUNG"
+    ],
+    "OP": [
+      "OP"
+    ]
+  },
+  "colors": {
+    "Titanium": [
+      "チタニウム",
+      "Titanium",
+      "Natural Titanium",
+      "ナチュラルチタニウム",
+      "デザートチタニウム",
+      "Desert Titanium",
+      "Black Titanium"
+    ],
+    "Silver": [
+      "シルバー",
+      "Silver",
+      "銀"
+    ],
+    "Gold": [
+      "ゴールド",
+      "Gold",
+      "金",
+      "Rose Gold",
+      "ローズゴールド"
+    ],
+    "Black": [
+      "ブラック",
+      "Black",
+      "黒",
+      "Midnight",
+      "ミッドナイト",
+      "Space Gray",
+      "スペースグレイ",
+      "Obsidian",
+      "オブシディアン",
+      "Phantom Black"
+    ],
+    "White": [
+      "ホワイト",
+      "White",
+      "白",
+      "Starlight",
+      "スターライト",
+      "Porcelain",
+      "ポーセリン",
+      "Snow"
+    ],
+    "Blue": [
+      "ブルー",
+      "Blue",
+      "青",
+      "Sierra Blue",
+      "シエラブルー",
+      "Pacific Blue",
+      "Bay",
+      "ベイ"
+    ],
+    "Red": [
+      "レッド",
+      "Red",
+      "赤",
+      "Product Red",
+      "PRODUCT(RED)"
+    ],
+    "Green": [
+      "グリーン",
+      "Green",
+      "緑",
+      "Alpine Green",
+      "Mint",
+      "ミント",
+      "Sage",
+      "Hazel",
+      "ヘーゼル"
+    ],
+    "Purple": [
+      "パープル",
+      "Purple",
+      "紫",
+      "Deep Purple",
+      "ディープパープル"
+    ],
+    "Pink": [
+      "ピンク",
+      "Pink",
+      "桃",
+      "Rose",
+      "ローズ",
+      "Peony",
+      "ピオニー"
+    ],
+    "Yellow": [
+      "イエロー",
+      "Yellow",
+      "黄",
+      "Lemongrass",
+      "レモングラス"
+    ],
+    "Orange": [
+      "オレンジ",
+      "Orange",
+      "橙",
+      "Coral",
+      "コーラル"
+    ]
+  },
+  "variants": {
+    "Pro Max": [
+      "Pro Max",
+      "プロマックス"
+    ],
+    "Pro": [
+      "Pro",
+      "プロ"
+    ],
+    "Plus": [
+      "Plus",
+      "プラス"
+    ],
+    "Ultra": [
+      "Ultra",
+      "ウルトラ"
+    ],
+    "mini": [
+      "mini",
+      "ミニ"
+    ],
+    "Fold": [
+      "Fold",
+      "フォールド",
+      "Z Fold"
+    ],
+    "Flip": [
+      "Flip",
+      "フリップ",
+      "Z Flip"
+    ]
+  },
+  "spam_keywords": [
+    "即日発送",
+    "送料無料",
+    "在庫あり",
+    "限定",
+    "セール中",
+    "SALE",
+    "おまけ付き",
+    "期間限定",
+    "箱付き",
+    "外箱痛みあり",
+    "アウトレット",
+    "残債なし",
+    "判定○",
+    "判定〇",
+    "判定×",
+    "SYS",
+    "\\[721\\]"
+  ]
+}

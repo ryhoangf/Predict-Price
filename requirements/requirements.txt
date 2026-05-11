@@ -1,0 +1,30 @@
+ipython
+pandas
+pyarrow
+numpy
+# pyspark
+requests
+bs4
+docker
+sqlalchemy
+selenium
+pymongo
+python-dotenv
+# mysql-connector-python
+flashtext
+scikit-learn
+joblib
+# flask
+# plotly
+lightgbm
+
+transformers>=4.35.0
+datasets>=2.14.0
+seqeval>=1.2.2
+# torch: Cài riêng phù hợp với CUDA version của máy
+# CPU only:    pip install torch --index-url https://download.pytorch.org/whl/cpu
+# CUDA 12.1:   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# CUDA 11.8:   pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
