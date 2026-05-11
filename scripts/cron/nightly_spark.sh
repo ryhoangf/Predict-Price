@@ -1,32 +1,31 @@
 #!/usr/bin/env bash
-# 22:45 — khởi động Spark (scaled), chờ master sẵn sàng, chạy main pipeline.
+# Tối: make down → 60s → make run-scaled (nền: compose up không có -d sẽ treo) → 60s → make submitmain
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_common.sh
+source "$SCRIPT_DIR/_common.sh"
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 cd "$REPO_ROOT"
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-log() { echo "[$(date -Iseconds)] $*"; }
+require_make_docker || exit 1
 
-log "Starting nightly Spark (detached, 3 workers)..."
+LOG_DIR="${REPO_ROOT}/logs"
+mkdir -p "$LOG_DIR"
+UP_LOG="${LOG_DIR}/cron-spark-up.log"
+
+cron_log "make down"
 make down
-docker compose up -d --scale spark-worker=3
+sleep 60
 
-log "Waiting for Spark master UI (host :9090 → container :8080)..."
-ok=0
-for i in $(seq 1 120); do
-  if curl -sf "http://127.0.0.1:9090" >/dev/null 2>&1; then
-    ok=1
-    break
-  fi
-  sleep 5
-done
-if [[ "$ok" -ne 1 ]]; then
-  log "ERROR: Spark master did not become ready in time."
-  exit 1
-fi
+cron_log "make run-scaled (chạy nền; xem ${UP_LOG})"
+nohup make run-scaled >>"$UP_LOG" 2>&1 &
+sleep 60
 
-log "Running submitmain..."
+cron_log "make submitmain"
 make submitmain
-log "Nightly Spark job finished OK."
+
+cron_log "Nightly make chain finished OK."

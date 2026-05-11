@@ -1,32 +1,20 @@
 #!/usr/bin/env bash
-# 08:00 — chạy ETL trong container Spark master (cùng image/deps với stack).
+# Sáng: cd Predict-Price/spark_apps/predictprice và chạy python etl.py (trên host, không docker exec)
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-cd "$REPO_ROOT"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_common.sh
+source "$SCRIPT_DIR/_common.sh"
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+ETL_DIR="${REPO_ROOT}/spark_apps/predictprice"
+
+cd "$ETL_DIR"
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-log() { echo "[$(date -Iseconds)] $*"; }
+require_python || exit 1
 
-if ! docker ps --format '{{.Names}}' | grep -qx 'da-spark-master'; then
-  log "da-spark-master not running; starting stack detached (1 worker, no volume wipe)..."
-  docker compose up -d --scale spark-worker=1
-  log "Waiting for master..."
-  ok=0
-  for i in $(seq 1 120); do
-    if curl -sf "http://127.0.0.1:9090" >/dev/null 2>&1; then
-      ok=1
-      break
-    fi
-    sleep 5
-  done
-  if [[ "$ok" -ne 1 ]]; then
-    log "ERROR: Spark master did not become ready."
-    exit 1
-  fi
-fi
-
-log "Running etl.py..."
-docker exec da-spark-master python /opt/spark/apps/predictprice/etl.py
-log "ETL finished OK."
+cron_log "Running etl.py in ${ETL_DIR}"
+run_python etl.py
+cron_log "ETL finished OK."
