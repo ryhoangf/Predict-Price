@@ -61,8 +61,10 @@ MAX_PAGES_MERCARI = 1
 MAX_PAGES_RAKUMA = 1
 MAX_PAGES_YAHOO = 1
 
-WORKER_MONGO_URI = "mongodb://da-mongo:27017/"
-
+WORKER_MONGO_URI = os.getenv(
+    "WORKER_MONGO_URI",
+    "mongodb://da-mongo:27017/",
+)
 # Proxy xoay (proxyxoay.shop) — chỉ dùng HTTP từ trường proxyhttp. Đặt PROXY_XOAY_KEY trong env.
 PROXY_XOAY_KEY = os.getenv("PROXY_XOAY_KEY", "").strip()
 PROXY_XOAY_API_URL = os.getenv(
