@@ -17,9 +17,9 @@ services:
       - spark-logs:/opt/spark/spark-events
     env_file:
       - .env.spark
-    # ports:
-    #   - '9090:8080'
-    #   - '7077:7077'
+    ports:
+      - '9090:8080'
+      - '7077:7077'
 
 
   spark-history-server:
@@ -53,8 +53,9 @@ services:
     image: mongo:4.4
     container_name: da-mongo
     restart: always
-    # ports:
-    #   - "27017:27017"
+    command: ["mongod", "--auth"]
+    ports:
+      - "127.0.0.1:27017:27017"
     volumes:
       - ./mongo_data:/data/db
 
