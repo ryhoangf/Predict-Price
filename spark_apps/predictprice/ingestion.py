@@ -1,6 +1,6 @@
 import pymongo
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 import config as cfg
 from contextlib import contextmanager
 
@@ -86,12 +86,20 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
         
         # BƯỚC 3: Thêm Metadata
         df["source"] = source_name
-        df["ingested_at"] = datetime.now()
+        df["ingested_at"] = datetime.now(timezone.utc)
         df["status"] = "extracted_layer2"
         df["processed"] = False
         if 'is_junk' not in df.columns:
             df["is_junk"] = False
-            
+
+        for _col in ("explanation", "condition"):
+            if _col in df.columns:
+                df[_col] = df[_col].apply(
+                    lambda x: None
+                    if x is None or (isinstance(x, float) and pd.isna(x))
+                    else (None if isinstance(x, str) and not str(x).strip() else x)
+                )
+
         df = df.where(pd.notna(df), None)
         records = df.to_dict("records")
 

@@ -4,6 +4,8 @@ pyarrow
 numpy
 # pyspark
 requests
+# Buyee WAF: TLS giống Chrome (predictprice dùng curl_cffi khi import được)
+curl-cffi>=0.7.0
 bs4
 docker
 sqlalchemy

@@ -248,9 +248,38 @@ def process_source_on_worker(source_name):
     from scrapers.yahooauction_scraping import scrape_yahooauction
     import ingestion
     import config as cfg
-    
+
+    def _nonempty_explanation_count(dframe: pd.DataFrame) -> int:
+        if dframe is None or dframe.empty or "explanation" not in dframe.columns:
+            return 0
+        n = 0
+        for v in dframe["explanation"]:
+            if v is None:
+                continue
+            if isinstance(v, float) and pd.isna(v):
+                continue
+            t = str(v).strip()
+            if t and t.lower() != "nan":
+                n += 1
+        return n
+
     print(f"--- [Worker] Bắt đầu xử lý nguồn: {source_name} ---")
-    
+    print(
+        f"[{source_name}] Buyee HTTP: PROXY_XOAY_KEY="
+        f"{'set' if bool(cfg.PROXY_XOAY_KEY) else 'MISSING'} | "
+        f"curl_cffi={cfg.prefer_curl_cffi_for_buyee()} | "
+        f"impersonate={cfg.BUYEE_CURL_IMPERSONATE}"
+    )
+    if not cfg.PROXY_XOAY_KEY:
+        print(
+            f"[{source_name}] CẢNH BÁO: không có PROXY_XOAY_KEY — detail/iframe dễ WAF từ IP worker. "
+            f"Đặt key giống predictprice/.env khi chạy Spark."
+        )
+    if not cfg.prefer_curl_cffi_for_buyee():
+        print(
+            f"[{source_name}] CẢNH BÁO: không dùng curl-cffi (chưa cài hoặc BUYEE_HTTP_CLIENT=requests) — Buyee hay 202 WAF."
+        )
+
     df = pd.DataFrame()
     try:
         # 1. Scrape dữ liệu theo từng nguồn
@@ -265,16 +294,22 @@ def process_source_on_worker(source_name):
 
         # 2. Lưu vào MongoDB từ Worker (Distributed Write)
         if not df.empty:
+            print(
+                f"[{source_name}] Sau scrape: {_nonempty_explanation_count(df)}/{len(df)} có explanation (text thô)."
+            )
             from NLP.title_nlp import PhoneInfoExtractor
             from NLP.item_explanation import ItemExplanationExtractor
-            
+
             print(f"[{source_name}] Bắt đầu chạy NLP Pipeline cho {len(df)} bản ghi...")
-            phone_nlp = PhoneInfoExtractor() 
+            phone_nlp = PhoneInfoExtractor()
             item_nlp = ItemExplanationExtractor()
-            
+
             # Layer 2: Trích xuất Specs (FlashText + Smart Window)
             df = phone_nlp.process_dataframe(df, title_column='name')
             df = item_nlp.process_dataframe(df, explanation_column='explanation')
+            print(
+                f"[{source_name}] Sau NLP: {_nonempty_explanation_count(df)}/{len(df)} có explanation."
+            )
             
             try:
                 import joblib

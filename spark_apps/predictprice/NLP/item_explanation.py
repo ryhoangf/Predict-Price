@@ -238,6 +238,10 @@ class ItemExplanationExtractor:
     #     return tfidf_matrix, self.feature_names
 
     def extract_all_info(self, text):
+        if text is None or (isinstance(text, float) and pd.isna(text)):
+            text = ""
+        elif not isinstance(text, str):
+            text = str(text) if text is not None else ""
         preprocessed = self.preprocess_text(text)
         result = {'original_explanation': text, 'preprocessed_explanation': preprocessed}
         
@@ -249,12 +253,28 @@ class ItemExplanationExtractor:
         result.update(self.extract_functional_status(preprocessed))
         return result
 
-    def process_dataframe(self, df, explanation_column='explanation'):
+    def process_dataframe(self, df, explanation_column="explanation"):
+        """
+        Giữ cột explanation = text thô từ scraper (None nếu không scrape được).
+        Tránh float NaN / '' lẫn vào dict làm Mongo không có chuỗi hiển thị được.
+        """
         results = []
         for idx, row in df.iterrows():
-            extracted = self.extract_all_info(row[explanation_column])
-            results.append({**row.to_dict(), **extracted})
-            if (idx + 1) % 500 == 0: # Đã tăng lên 500 vì code chạy rất nhanh
+            raw = row.get(explanation_column)
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                raw_stored = None
+                text_for_features = ""
+            else:
+                s = str(raw).strip()
+                raw_stored = s if s else None
+                text_for_features = s if s else ""
+
+            extracted = self.extract_all_info(text_for_features)
+            merged = {**row.to_dict(), **extracted}
+            merged["explanation"] = raw_stored
+            merged["original_explanation"] = raw_stored
+            results.append(merged)
+            if (idx + 1) % 500 == 0:
                 print(f"Đã xử lý {idx + 1}/{len(df)} records...")
         return pd.DataFrame(results)
 
