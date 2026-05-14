@@ -18,10 +18,13 @@ except ImportError:
     _CURL_CFFI_AVAILABLE = False
 
 _CONFIG_DIR = Path(__file__).resolve().parent
-_env_file = _CONFIG_DIR / ".env"
-if _env_file.is_file():
-    load_dotenv(_env_file)
-else:
+# Spark thường copy config.py vào /tmp/spark-.../userFiles — không có .env cạnh đó;
+# trong container app mount tại /opt/spark/apps/predictprice → luôn thử .env ở đó.
+_DOCKER_PREDICTPRICE_ENV = Path("/opt/spark/apps/predictprice/.env")
+for _env_path in (_CONFIG_DIR / ".env", _DOCKER_PREDICTPRICE_ENV):
+    if _env_path.is_file():
+        load_dotenv(_env_path)
+if not (_CONFIG_DIR / ".env").is_file() and not _DOCKER_PREDICTPRICE_ENV.is_file():
     load_dotenv()
 
 # Cookie từ trình duyệt đã vào được buyee.jp (DevTools → Application → Cookie), dán nguyên chuỗi "name=value; ...".
