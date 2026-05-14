@@ -1,5 +1,6 @@
 import pymongo
 import pandas as pd
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
@@ -36,7 +37,8 @@ def get_mongo_connection(custom_uri=None):
             uri_to_use,
             serverSelectionTimeoutMS=10000,
             connectTimeoutMS=10000,
-            socketTimeoutMS=60000,
+            # Insert batch nhiều field text lớn có thể > 60s trên mạng chậm / disk chậm
+            socketTimeoutMS=300_000,
             maxPoolSize=50,
             maxIdleTimeMS=30000,
             retryWrites=True,
@@ -122,26 +124,22 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             return out
 
         existing_links: set = set()
-        # Trước đây: find({}) full collection → dễ ExecutionTimeout / chậm; insert sau đó toàn dup 11000 → saved=0.
-        # Chỉ tra các link của batch này ($in), dùng index link (nhanh, ít timeout).
+        # distinct + $in: một round-trip/chunk, server làm việc trên index — nhanh hơn find + iterate cursor.
         in_chunk = 500
+        t_dedup_start = time.perf_counter()
         try:
             for ci in range(0, len(batch_links), in_chunk):
                 chunk = [x for x in batch_links[ci : ci + in_chunk] if isinstance(x, str)]
                 if not chunk:
                     continue
-                # Không dùng max_time_ms: một số stack/driver lỗi lạ; $in + index link thường rất nhanh.
-                cur = col.find(
-                    {"link": {"$in": chunk}},
-                    {"link": 1, "_id": 0},
-                )
-                for doc in cur:
-                    lk = doc.get("link")
-                    if lk:
-                        existing_links.add(lk)
+                matched = col.distinct("link", {"link": {"$in": chunk}})
+                if matched:
+                    existing_links.update(matched)
+            dedup_s = time.perf_counter() - t_dedup_start
             print(
                 f"[{source_name}] Batch có {len(batch_links)} URL duy nhất; "
-                f"{len(existing_links)} đã tồn tại trong Mongo (sẽ bỏ qua)."
+                f"{len(existing_links)} đã tồn tại trong Mongo (sẽ bỏ qua). "
+                f"[timing] dedup={dedup_s:.2f}s"
             )
         except pymongo.errors.ExecutionTimeout:
             print(
@@ -189,12 +187,18 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                 )
 
         df = df.where(pd.notna(df), None)
+        t_build = time.perf_counter()
         records = df.to_dict("records")
+        build_s = time.perf_counter() - t_build
         out["after_dedup"] = len(records)
-        print(f"[{source_name}] DEBUG ingest: rows_to_insert={out['after_dedup']}")
+        print(
+            f"[{source_name}] DEBUG ingest: rows_to_insert={out['after_dedup']} "
+            f"(build records {build_s:.2f}s)"
+        )
 
         BATCH_SIZE = 1000
         total_saved = 0
+        t_ins_start = time.perf_counter()
 
         for i in range(0, len(records), BATCH_SIZE):
             batch = records[i : i + BATCH_SIZE]
@@ -224,6 +228,7 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                     f"{type(e).__name__}: {e}"
                 )
 
+        ins_s = time.perf_counter() - t_ins_start
         out["saved"] = total_saved
         if total_saved > 0:
             out["stage"] = "inserted"
@@ -234,7 +239,8 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
 
         print(
             f"[{source_name}] Tổng lưu {total_saved}/{initial_count} bản ghi "
-            f"(sau dedup: {out['after_dedup']}) | stage={out['stage']}"
+            f"(sau dedup: {out['after_dedup']}) | stage={out['stage']} "
+            f"| [timing] insert={ins_s:.2f}s"
         )
         return out
 

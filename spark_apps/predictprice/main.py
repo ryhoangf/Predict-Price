@@ -243,6 +243,7 @@ def process_source_on_worker(source_name):
     if '/opt/spark/apps/predictprice' not in sys.path:
         sys.path.append('/opt/spark/apps/predictprice')
     import pandas as pd
+    import time
     from scrapers.mercari_scraping import scrape_mercari
     from scrapers.rakuma_scraping import scrape_rakuma
     from scrapers.yahooauction_scraping import scrape_yahooauction
@@ -283,6 +284,7 @@ def process_source_on_worker(source_name):
     df = pd.DataFrame()
     try:
         # 1. Scrape dữ liệu theo từng nguồn
+        t_scrape = time.perf_counter()
         if source_name == 'mercari':
             df = scrape_mercari(end_page=cfg.MAX_PAGES_MERCARI)
         elif source_name == 'rakuma':
@@ -291,6 +293,7 @@ def process_source_on_worker(source_name):
             df = scrape_yahooauction(end_page=cfg.MAX_PAGES_YAHOO)
         else:
             return f"ERROR: {source_name} - Unknown source"
+        print(f"[{source_name}] [timing] scrape={time.perf_counter() - t_scrape:.1f}s")
 
         # 2. Lưu vào MongoDB từ Worker (Distributed Write)
         if not df.empty:
@@ -301,6 +304,7 @@ def process_source_on_worker(source_name):
             from NLP.item_explanation import ItemExplanationExtractor
 
             print(f"[{source_name}] Bắt đầu chạy NLP Pipeline cho {len(df)} bản ghi...")
+            t_nlp = time.perf_counter()
             phone_nlp = PhoneInfoExtractor()
             item_nlp = ItemExplanationExtractor()
 
@@ -354,6 +358,11 @@ def process_source_on_worker(source_name):
             except Exception as ml_err:
                 print(f"[{source_name}] Lỗi chạy Layer 1 (LightGBM): {ml_err}. Tạm thời bỏ qua (is_junk=False)")
                 df['is_junk'] = False
+
+            print(
+                f"[{source_name}] [timing] nlp+junk_layer1={time.perf_counter() - t_nlp:.1f}s "
+                f"(NLP + junk model; Mongo chưa gồm)"
+            )
 
             # Lưu vào MongoDB
             print(
