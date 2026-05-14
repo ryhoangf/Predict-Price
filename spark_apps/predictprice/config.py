@@ -6,7 +6,7 @@ import requests
 import time
 import random
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 from dotenv import load_dotenv
 
 try:

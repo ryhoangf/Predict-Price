@@ -356,8 +356,33 @@ def process_source_on_worker(source_name):
                 df['is_junk'] = False
 
             # Lưu vào MongoDB
-            ingestion.save_batch_to_datalake(df, source_name, custom_mongo_uri=cfg.WORKER_MONGO_URI)
-            return f"SUCCESS: {source_name} - {len(df)} items processed & saved to Data Lake"
+            print(
+                f"[{source_name}] DEBUG worker Mongo: "
+                f"{ingestion.redact_mongo_uri(cfg.WORKER_MONGO_URI)} | "
+                f"db={cfg.DB_NAME} coll={cfg.COLLECTION_NAME}"
+            )
+            ingest_stats = ingestion.save_batch_to_datalake(
+                df, source_name, custom_mongo_uri=cfg.WORKER_MONGO_URI
+            )
+            saved = ingest_stats.get("saved", 0) if ingest_stats else 0
+            stage = (ingest_stats or {}).get("stage", "?")
+            if stage == "mongo_connection_failed":
+                return f"ERROR: {source_name} - Mongo không kết nối được (xem log [mongo])."
+            if stage == "all_duplicates":
+                return (
+                    f"OK: {source_name} - NLP {len(df)} dòng, mongo_inserted=0 "
+                    f"(toàn URL đã có | stage={stage})"
+                )
+            if saved == 0 and (ingest_stats or {}).get("after_dedup", 0) > 0:
+                return (
+                    f"WARN: {source_name} - NLP {len(df)} dòng, "
+                    f"sau dedup {(ingest_stats or {}).get('after_dedup')} nhưng saved=0 "
+                    f"(stage={stage})"
+                )
+            return (
+                f"SUCCESS: {source_name} - NLP rows={len(df)}, "
+                f"mongo_inserted={saved}, stage={stage}"
+            )
         else:
             return f"WARNING: {source_name} - No items found"
 
