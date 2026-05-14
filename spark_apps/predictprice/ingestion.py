@@ -127,11 +127,14 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
         in_chunk = 500
         try:
             for ci in range(0, len(batch_links), in_chunk):
-                chunk = batch_links[ci : ci + in_chunk]
+                chunk = [x for x in batch_links[ci : ci + in_chunk] if isinstance(x, str)]
+                if not chunk:
+                    continue
+                # Không dùng max_time_ms: một số stack/driver lỗi lạ; $in + index link thường rất nhanh.
                 cur = col.find(
                     {"link": {"$in": chunk}},
                     {"link": 1, "_id": 0},
-                ).max_time_ms(120000)
+                )
                 for doc in cur:
                     lk = doc.get("link")
                     if lk:
@@ -148,8 +151,10 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             out["stage"] = "dedup_query_timeout"
             return out
         except Exception as e:
-            print(f"[{source_name}] DEBUG duplicate query | {type(e).__name__}: {e}")
+            err_msg = f"{type(e).__name__}: {e}"
+            print(f"[{source_name}] DEBUG duplicate query | {err_msg}")
             out["stage"] = "dedup_query_failed"
+            out["dedup_error"] = err_msg[:800]
             return out
 
         if existing_links:

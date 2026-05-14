@@ -368,6 +368,18 @@ def process_source_on_worker(source_name):
             stage = (ingest_stats or {}).get("stage", "?")
             if stage == "mongo_connection_failed":
                 return f"ERROR: {source_name} - Mongo không kết nối được (xem log [mongo])."
+            fail_early = (
+                "dedup_query_failed",
+                "dedup_query_timeout",
+                "link_column_invalid",
+                "missing_link_column",
+            )
+            if stage in fail_early:
+                detail = (ingest_stats or {}).get("dedup_error", "")
+                return (
+                    f"ERROR: {source_name} - ingest dừng (stage={stage})"
+                    f"{(' | ' + detail) if detail else ''}"
+                )
             if stage == "all_duplicates":
                 return (
                     f"OK: {source_name} - NLP {len(df)} dòng, mongo_inserted=0 "
