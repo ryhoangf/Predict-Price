@@ -102,19 +102,55 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
 
         print(f"[{source_name}] Kiểm tra duplicate với {initial_count} items...")
 
-        existing_links: set = set()
-        try:
-            existing_docs = col.find(
-                {},
-                {"link": 1, "_id": 0},
-            ).max_time_ms(30000)
+        if "link" not in df.columns:
+            print(f"[{source_name}] Thiếu cột 'link' — không thể lưu.")
+            out["stage"] = "missing_link_column"
+            return out
 
-            existing_links = {doc.get("link") for doc in existing_docs if doc.get("link")}
-            print(f"[{source_name}] Tìm thấy {len(existing_links)} URL đã có trong collection.")
+        try:
+            batch_links = (
+                df["link"]
+                .dropna()
+                .astype(str)
+                .loc[lambda s: s.str.strip() != ""]
+                .unique()
+                .tolist()
+            )
+        except Exception as e:
+            print(f"[{source_name}] DEBUG không lấy được danh sách link | {type(e).__name__}: {e}")
+            out["stage"] = "link_column_invalid"
+            return out
+
+        existing_links: set = set()
+        # Trước đây: find({}) full collection → dễ ExecutionTimeout / chậm; insert sau đó toàn dup 11000 → saved=0.
+        # Chỉ tra các link của batch này ($in), dùng index link (nhanh, ít timeout).
+        in_chunk = 500
+        try:
+            for ci in range(0, len(batch_links), in_chunk):
+                chunk = batch_links[ci : ci + in_chunk]
+                cur = col.find(
+                    {"link": {"$in": chunk}},
+                    {"link": 1, "_id": 0},
+                ).max_time_ms(120000)
+                for doc in cur:
+                    lk = doc.get("link")
+                    if lk:
+                        existing_links.add(lk)
+            print(
+                f"[{source_name}] Batch có {len(batch_links)} URL duy nhất; "
+                f"{len(existing_links)} đã tồn tại trong Mongo (sẽ bỏ qua)."
+            )
         except pymongo.errors.ExecutionTimeout:
-            print(f"[{source_name}] Timeout khi query URLs. Bỏ qua kiểm tra duplicate.")
+            print(
+                f"[{source_name}] Timeout khi query duplicate ($in). "
+                f"Không insert để tránh cả batch lỗi 11000 vì thiếu lọc trùng."
+            )
+            out["stage"] = "dedup_query_timeout"
+            return out
         except Exception as e:
             print(f"[{source_name}] DEBUG duplicate query | {type(e).__name__}: {e}")
+            out["stage"] = "dedup_query_failed"
+            return out
 
         if existing_links:
             df = df[~df["link"].isin(existing_links)].copy()
