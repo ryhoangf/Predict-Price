@@ -389,6 +389,11 @@ def process_source_on_worker(source_name):
                     f"ERROR: {source_name} - ingest dừng (stage={stage})"
                     f"{(' | ' + detail) if detail else ''}"
                 )
+            if stage == "no_valid_links":
+                return (
+                    f"WARN: {source_name} - NLP {len(df)} dòng nhưng không có link hợp lệ "
+                    f"để ingest (stage={stage})"
+                )
             if stage == "all_duplicates":
                 return (
                     f"OK: {source_name} - NLP {len(df)} dòng, mongo_inserted=0 "

@@ -89,10 +89,10 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
         out["stage"] = "empty_df"
         return out
 
-    initial_count = len(df)
-    out["rows_in_batch"] = initial_count
+    rows_received = len(df)
+    out["rows_in_batch"] = rows_received
     print(
-        f"[{source_name}] DEBUG ingest: rows_before_dedup={initial_count} | "
+        f"[{source_name}] DEBUG ingest: rows_in={rows_received} | "
         f"target={uri_log} | db={cfg.DB_NAME} | coll={cfg.COLLECTION_NAME}"
     )
 
@@ -102,12 +102,35 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             out["stage"] = "mongo_connection_failed"
             return out
 
-        print(f"[{source_name}] Kiểm tra duplicate với {initial_count} items...")
-
         if "link" not in df.columns:
             print(f"[{source_name}] Thiếu cột 'link' — không thể lưu.")
             out["stage"] = "missing_link_column"
             return out
+
+        df = df.copy()
+        _lnk = df["link"]
+        _ok = _lnk.notna()
+        df.loc[_ok, "link"] = _lnk[_ok].astype(str).str.strip()
+        bad = df["link"].isna() | (df["link"].astype(str).str.len() == 0)
+        if bad.any():
+            n_bad = int(bad.sum())
+            df = df.loc[~bad].copy()
+            print(f"[{source_name}] Bỏ {n_bad} dòng không có link hợp lệ (trống/NaN).")
+        if df.empty:
+            print(f"[{source_name}] Không còn dòng có link — không insert.")
+            out["stage"] = "no_valid_links"
+            return out
+
+        before_intra = len(df)
+        df = df.drop_duplicates(subset=["link"], keep="first").reset_index(drop=True)
+        intra_dropped = before_intra - len(df)
+        if intra_dropped > 0:
+            print(
+                f"[{source_name}] Bỏ {intra_dropped} dòng trùng link trong cùng batch "
+                f"(giữ bản đầu, tránh BulkWrite 11000)."
+            )
+
+        print(f"[{source_name}] Kiểm tra duplicate Mongo với {len(df)} items...")
 
         try:
             batch_links = (
@@ -156,8 +179,9 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             return out
 
         if existing_links:
+            before_mongo = len(df)
             df = df[~df["link"].isin(existing_links)].copy()
-            duplicates_removed = initial_count - len(df)
+            duplicates_removed = before_mongo - len(df)
 
             if duplicates_removed > 0:
                 print(
@@ -187,21 +211,20 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                 )
 
         df = df.where(pd.notna(df), None)
-        t_build = time.perf_counter()
-        records = df.to_dict("records")
-        build_s = time.perf_counter() - t_build
-        out["after_dedup"] = len(records)
-        print(
-            f"[{source_name}] DEBUG ingest: rows_to_insert={out['after_dedup']} "
-            f"(build records {build_s:.2f}s)"
-        )
+        n_to_insert = len(df)
+        out["after_dedup"] = n_to_insert
+        print(f"[{source_name}] DEBUG ingest: rows_to_insert={n_to_insert}")
 
+        # insert_many theo batch; to_dict("records") từng batch — giảm peak RAM vs convert cả DataFrame một lần.
         BATCH_SIZE = 1000
         total_saved = 0
         t_ins_start = time.perf_counter()
+        t_build_total = 0.0
 
-        for i in range(0, len(records), BATCH_SIZE):
-            batch = records[i : i + BATCH_SIZE]
+        for i in range(0, n_to_insert, BATCH_SIZE):
+            t_b = time.perf_counter()
+            batch = df.iloc[i : i + BATCH_SIZE].to_dict("records")
+            t_build_total += time.perf_counter() - t_b
             try:
                 result = col.insert_many(batch, ordered=False)
                 total_saved += len(result.inserted_ids)
@@ -238,9 +261,9 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             out["stage"] = "no_rows_to_insert"
 
         print(
-            f"[{source_name}] Tổng lưu {total_saved}/{initial_count} bản ghi "
+            f"[{source_name}] Tổng lưu {total_saved}/{rows_received} bản ghi "
             f"(sau dedup: {out['after_dedup']}) | stage={out['stage']} "
-            f"| [timing] insert={ins_s:.2f}s"
+            f"| [timing] build_records={t_build_total:.2f}s insert={ins_s:.2f}s"
         )
         return out
 

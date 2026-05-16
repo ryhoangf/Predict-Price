@@ -17,6 +17,7 @@ class ItemExplanationExtractor:
         # Khởi tạo FlashText cho các xử lý siêu tốc
         self.negation_processor = KeywordProcessor(case_sensitive=False)
         self._setup_processors()
+        self._kw_regex_cache = {}
 
     def _load_config(self, config_path):
         if not os.path.exists(config_path):
@@ -39,6 +40,19 @@ class ItemExplanationExtractor:
         for neg in self.config.get('negation_keywords', []):
             self.negation_processor.add_keyword(neg, "NEGATION_FOUND")
 
+    def _keyword_union_pattern(self, keywords):
+        if not keywords:
+            return None
+        key = tuple(keywords)
+        cre = self._kw_regex_cache.get(key)
+        if cre is None:
+            cre = re.compile(
+                r'(' + '|'.join(map(re.escape, keywords)) + r')',
+                re.IGNORECASE,
+            )
+            self._kw_regex_cache[key] = cre
+        return cre
+
     def preprocess_text(self, text):
         if not isinstance(text, str): return ""
         text = unicodedata.normalize('NFKC', text)
@@ -53,13 +67,14 @@ class ItemExplanationExtractor:
         - check_ahead = False: Tìm phủ định SAU từ khóa (Ví dụ: 傷 -> なし)
         - check_ahead = True: Tìm phủ định TRƯỚC từ khóa (Ví dụ: 付属しません -> 箱)
         """
-        if not keywords: return False
-        
-        # Tạo regex gộp tất cả keywords (Ví dụ: 箱|元箱|box)
-        pattern = r'(' + '|'.join(map(re.escape, keywords)) + r')'
-        matches = list(re.finditer(pattern, text, re.IGNORECASE))
-        
-        if not matches: return False
+        if not keywords:
+            return False
+
+        cre = self._keyword_union_pattern(keywords)
+        matches = list(cre.finditer(text))
+
+        if not matches:
+            return False
         
         # Nếu tìm thấy từ khóa, kiểm tra các cửa sổ xung quanh nó
         for match in matches:
@@ -258,25 +273,35 @@ class ItemExplanationExtractor:
         Giữ cột explanation = text thô từ scraper (None nếu không scrape được).
         Tránh float NaN / '' lẫn vào dict làm Mongo không có chuỗi hiển thị được.
         """
-        results = []
-        for idx, row in df.iterrows():
-            raw = row.get(explanation_column)
+        n = len(df)
+        if explanation_column in df.columns:
+            raw_series = df[explanation_column]
+        else:
+            raw_series = pd.Series([None] * n, index=df.index)
+
+        feats = []
+        raw_stored_list = []
+        for i in range(n):
+            raw = raw_series.iat[i]
             if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-                raw_stored = None
+                raw_stored_list.append(None)
                 text_for_features = ""
             else:
                 s = str(raw).strip()
-                raw_stored = s if s else None
+                raw_stored_list.append(s if s else None)
                 text_for_features = s if s else ""
 
-            extracted = self.extract_all_info(text_for_features)
-            merged = {**row.to_dict(), **extracted}
-            merged["explanation"] = raw_stored
-            merged["original_explanation"] = raw_stored
-            results.append(merged)
-            if (idx + 1) % 500 == 0:
-                print(f"Đã xử lý {idx + 1}/{len(df)} records...")
-        return pd.DataFrame(results)
+            feats.append(self.extract_all_info(text_for_features))
+            if (i + 1) % 500 == 0:
+                print(f"Đã xử lý {i + 1}/{n} records...")
+
+        feat_df = pd.DataFrame(feats, index=df.index)
+        out = df.copy()
+        for c in feat_df.columns:
+            out[c] = feat_df[c].values
+        out["explanation"] = raw_stored_list
+        out["original_explanation"] = raw_stored_list
+        return out
 
 # [Phần hàm print_nice_table và main() giữ nguyên như cũ, không cần thay đổi]
 def print_nice_table(df, max_rows=10):

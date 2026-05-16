@@ -5,6 +5,22 @@ import json
 import os
 from flashtext import KeywordProcessor
 
+_DECOR_RE = re.compile(r'[★☆♪♡●◆■□◇△▲▼►◄※⚠️‼️【】]')
+_EMOJI_RE = re.compile(
+    "[" "\U0001F600-\U0001F64F" "\U0001F300-\U0001F5FF"
+    "\U0001F680-\U0001F6FF" "\U0001F1E0-\U0001F1FF"
+    "\U00002702-\U000027B0" "\U000024C2-\U0001F251" "]+",
+    flags=re.UNICODE,
+)
+_URL_RE = re.compile(r'http\S+|www\S+')
+_WS_RE = re.compile(r'\s+')
+_BRAND_FIX_RE = (
+    (re.compile(r'\biphone\b', re.IGNORECASE), 'iPhone'),
+    (re.compile(r'\bgalaxy\b', re.IGNORECASE), 'Galaxy'),
+    (re.compile(r'\bpixel\b', re.IGNORECASE), 'Pixel'),
+    (re.compile(r'\bxperia\b', re.IGNORECASE), 'Xperia'),
+)
+
 class PhoneInfoExtractor:
     def __init__(self, config_path='nlp_config.json'):
         """Khởi tạo Extractor, load cấu hình từ JSON và nạp vào FlashText"""
@@ -16,7 +32,9 @@ class PhoneInfoExtractor:
         self.variant_processor = KeywordProcessor(case_sensitive=False)
         
         self._setup_processors()
-        
+        spam = self.config.get('spam_keywords', [])
+        self._spam_res = [re.compile(kw, re.IGNORECASE) for kw in spam]
+
     def _load_config(self, config_path):
         """Đọc file JSON chứa từ điển"""
         if not os.path.exists(config_path):
@@ -60,35 +78,19 @@ class PhoneInfoExtractor:
         
         # Chuẩn hóa Unicode
         text = unicodedata.normalize('NFKC', text)
-        
-        # Loại bỏ ký tự trang trí
-        text = re.sub(r'[★☆♪♡●◆■□◇△▲▼►◄※⚠️‼️【】]', ' ', text)
-        
-        # Loại bỏ Emoji
-        emoji_pattern = re.compile(
-            "[" u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF"
-            u"\U0001F680-\U0001F6FF" u"\U0001F1E0-\U0001F1FF"
-            u"\U00002702-\U000027B0" u"\U000024C2-\U0001F251" "]+", flags=re.UNICODE
-        )
-        text = emoji_pattern.sub(r' ', text)
-        
-        # Loại bỏ URL
-        text = re.sub(r'http\S+|www\S+', '', text)
-        
-        # Xóa Spam Keywords (Load từ JSON)
-        spam_keywords = self.config.get('spam_keywords', [])
-        for keyword in spam_keywords:
-            text = re.sub(keyword, ' ', text, flags=re.IGNORECASE)
 
-        # Chuẩn hóa khoảng trắng
+        text = _DECOR_RE.sub(' ', text)
+        text = _EMOJI_RE.sub(' ', text)
+        text = _URL_RE.sub('', text)
+
+        for cre in self._spam_res:
+            text = cre.sub(' ', text)
+
         text = text.replace('　', ' ')
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        # Tiền xử lý chuẩn hóa tên cơ bản để Regex dễ bắt hơn
-        text = re.sub(r'\biphone\b', 'iPhone', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bgalaxy\b', 'Galaxy', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bpixel\b', 'Pixel', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bxperia\b', 'Xperia', text, flags=re.IGNORECASE)
+        text = _WS_RE.sub(' ', text).strip()
+
+        for cre, repl in _BRAND_FIX_RE:
+            text = cre.sub(repl, text)
         
         return text
 
@@ -194,19 +196,30 @@ class PhoneInfoExtractor:
             'capacity': capacity
         }
 
+    @staticmethod
+    def _cell_to_title_str(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        return str(v)
+
     def process_dataframe(self, df, title_column='name'):
-        results = []
-        for idx, row in df.iterrows():
-            # Thay vì row['title'], lấy giá trị từ title_column truyền vào
-            title = row.get(title_column, "")
-            extracted = self.extract_all_info(title)
-            results.append({**row.to_dict(), **extracted})
-            
-            # Đã tối ưu tốc độ, có thể in log thưa ra
-            if (idx + 1) % 1000 == 0:
-                print(f"Processed {idx + 1}/{len(df)} records...")
-                
-        return pd.DataFrame(results)
+        if title_column not in df.columns:
+            titles = pd.Series([""] * len(df), index=df.index)
+        else:
+            titles = df[title_column].map(self._cell_to_title_str)
+
+        n = len(df)
+        feats = []
+        for i in range(n):
+            feats.append(self.extract_all_info(titles.iat[i]))
+            if (i + 1) % 1000 == 0:
+                print(f"Processed {i + 1}/{n} records...")
+
+        feat_df = pd.DataFrame(feats, index=df.index)
+        out = df.copy()
+        for c in feat_df.columns:
+            out[c] = feat_df[c].values
+        return out
 
 def main():
     # Chú ý đường dẫn file JSON cấu hình
