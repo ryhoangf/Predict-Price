@@ -644,6 +644,19 @@ REFERERS = {
 
 DELAY = (1.0, 2.0)
 
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        raw = (os.getenv(name, str(default)) or str(default)).strip()
+        v = int(raw)
+        return max(minimum, v)
+    except ValueError:
+        return max(minimum, default)
+
+
+# Số luồng tối đa khi fetch chi tiết từng item (Buyee/WAF — không tăng quá cao).
+DETAIL_FETCH_MAX_WORKERS = _env_int("DETAIL_FETCH_MAX_WORKERS", 6, minimum=1)
+
 ENDPOINTS = {
     "mercari_iframe":      "https://buyee.jp/mercari/search",
     "mercari_category_id": "859",

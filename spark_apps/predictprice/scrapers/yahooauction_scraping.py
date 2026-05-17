@@ -5,6 +5,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config as config
+from scrapers.detail_parallel import map_urls_parallel
+from scrapers.listing_df_cleanup import prepare_listing_dataframe
 import pandas as pd
 import random, time
 from bs4 import BeautifulSoup
@@ -58,26 +60,39 @@ def scrape_yahooauction(end_page: int) -> pd.DataFrame:
         time.sleep(random.uniform(*config.DELAY))
 
     df = pd.DataFrame(all_items)
+    df = prepare_listing_dataframe(df, "YahooAuction")
     if df.empty:
         print("   ❌ No valid items found")
         return df
 
-    print(f"\n   → Fetching details for {len(df)} items...")
+    print(
+        f"\n   → Fetching details for {len(df)} items "
+        f"(parallel workers={config.DETAIL_FETCH_MAX_WORKERS})..."
+    )
     try:
-        details = df["link"].apply(
-            lambda u: config.safe_fetch_with_retry(
+
+        def _one(u):
+            return config.safe_fetch_with_retry(
                 get_item_details_yahooauction,
                 u,
                 max_retries=2,
                 invalidate_proxy_on_retry=True,
             )
+
+        t_detail = time.perf_counter()
+        details = map_urls_parallel(
+            df["link"].tolist(), _one, config.DETAIL_FETCH_MAX_WORKERS
         )
-        df["condition"] = details.apply(
-            lambda x: x[0] if isinstance(x, tuple) and len(x) >= 2 else None
+        print(
+            f"   [YahooAuction] [timing] detail_fetch="
+            f"{time.perf_counter() - t_detail:.1f}s"
         )
-        df["explanation"] = details.apply(
-            lambda x: x[1] if isinstance(x, tuple) and len(x) >= 2 else None
-        )
+        df["condition"] = [
+            x[0] if isinstance(x, tuple) and len(x) >= 2 else None for x in details
+        ]
+        df["explanation"] = [
+            x[1] if isinstance(x, tuple) and len(x) >= 2 else None for x in details
+        ]
     except Exception:
         df["condition"] = None
         df["explanation"] = None

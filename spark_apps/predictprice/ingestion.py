@@ -82,6 +82,9 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
         "rows_in_batch": 0,
         "after_dedup": 0,
         "mongo_uri": uri_log,
+        "dedup_s": None,
+        "build_records_s": None,
+        "insert_s": None,
     }
 
     if df is None or df.empty:
@@ -159,12 +162,14 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                 if matched:
                     existing_links.update(matched)
             dedup_s = time.perf_counter() - t_dedup_start
+            out["dedup_s"] = dedup_s
             print(
                 f"[{source_name}] Batch có {len(batch_links)} URL duy nhất; "
                 f"{len(existing_links)} đã tồn tại trong Mongo (sẽ bỏ qua). "
                 f"[timing] dedup={dedup_s:.2f}s"
             )
         except pymongo.errors.ExecutionTimeout:
+            out["dedup_s"] = time.perf_counter() - t_dedup_start
             print(
                 f"[{source_name}] Timeout khi query duplicate ($in). "
                 f"Không insert để tránh cả batch lỗi 11000 vì thiếu lọc trùng."
@@ -172,6 +177,7 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
             out["stage"] = "dedup_query_timeout"
             return out
         except Exception as e:
+            out["dedup_s"] = time.perf_counter() - t_dedup_start
             err_msg = f"{type(e).__name__}: {e}"
             print(f"[{source_name}] DEBUG duplicate query | {err_msg}")
             out["stage"] = "dedup_query_failed"
@@ -193,6 +199,8 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                 print(f"[{source_name}] Tất cả dữ liệu đều đã tồn tại — không insert.")
                 out["stage"] = "all_duplicates"
                 out["after_dedup"] = 0
+                out["build_records_s"] = 0.0
+                out["insert_s"] = 0.0
                 return out
 
         df["source"] = source_name
@@ -252,6 +260,8 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
                 )
 
         ins_s = time.perf_counter() - t_ins_start
+        out["build_records_s"] = t_build_total
+        out["insert_s"] = ins_s
         out["saved"] = total_saved
         if total_saved > 0:
             out["stage"] = "inserted"

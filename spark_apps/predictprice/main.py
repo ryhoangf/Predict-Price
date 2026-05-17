@@ -283,6 +283,7 @@ def process_source_on_worker(source_name):
 
     df = pd.DataFrame()
     try:
+        t_pipeline = time.perf_counter()
         # 1. Scrape dữ liệu theo từng nguồn
         t_scrape = time.perf_counter()
         if source_name == 'mercari':
@@ -293,7 +294,8 @@ def process_source_on_worker(source_name):
             df = scrape_yahooauction(end_page=cfg.MAX_PAGES_YAHOO)
         else:
             return f"ERROR: {source_name} - Unknown source"
-        print(f"[{source_name}] [timing] scrape={time.perf_counter() - t_scrape:.1f}s")
+        scrape_s = time.perf_counter() - t_scrape
+        print(f"[{source_name}] [timing] scrape={scrape_s:.1f}s")
 
         # 2. Lưu vào MongoDB từ Worker (Distributed Write)
         if not df.empty:
@@ -359,12 +361,14 @@ def process_source_on_worker(source_name):
                 print(f"[{source_name}] Lỗi chạy Layer 1 (LightGBM): {ml_err}. Tạm thời bỏ qua (is_junk=False)")
                 df['is_junk'] = False
 
+            nlp_s = time.perf_counter() - t_nlp
             print(
-                f"[{source_name}] [timing] nlp+junk_layer1={time.perf_counter() - t_nlp:.1f}s "
+                f"[{source_name}] [timing] nlp+junk_layer1={nlp_s:.1f}s "
                 f"(NLP + junk model; Mongo chưa gồm)"
             )
 
             # Lưu vào MongoDB
+            t_mongo = time.perf_counter()
             print(
                 f"[{source_name}] DEBUG worker Mongo: "
                 f"{ingestion.redact_mongo_uri(cfg.WORKER_MONGO_URI)} | "
@@ -373,6 +377,27 @@ def process_source_on_worker(source_name):
             ingest_stats = ingestion.save_batch_to_datalake(
                 df, source_name, custom_mongo_uri=cfg.WORKER_MONGO_URI
             )
+            mongo_wall_s = time.perf_counter() - t_mongo
+            ded_s = (ingest_stats or {}).get("dedup_s")
+            br_s = (ingest_stats or {}).get("build_records_s")
+            ins_s = (ingest_stats or {}).get("insert_s")
+            if ded_s is not None and br_s is not None and ins_s is not None:
+                print(
+                    f"[{source_name}] [timing] mongo wall={mongo_wall_s:.1f}s "
+                    f"dedup={ded_s:.2f}s build_records={br_s:.2f}s insert={ins_s:.2f}s"
+                )
+            else:
+                print(
+                    f"[{source_name}] [timing] mongo wall={mongo_wall_s:.1f}s "
+                    f"(dedup/build/insert chưa ghi đủ — xem stage)"
+                )
+            pipeline_s = time.perf_counter() - t_pipeline
+            print(
+                f"[{source_name}] [timing] SUMMARY "
+                f"scrape={scrape_s:.1f}s + nlp+junk={nlp_s:.1f}s + mongo={mongo_wall_s:.1f}s "
+                f"≈ pipeline={pipeline_s:.1f}s"
+            )
+
             saved = ingest_stats.get("saved", 0) if ingest_stats else 0
             stage = (ingest_stats or {}).get("stage", "?")
             if stage == "mongo_connection_failed":
@@ -410,6 +435,10 @@ def process_source_on_worker(source_name):
                 f"mongo_inserted={saved}, stage={stage}"
             )
         else:
+            print(
+                f"[{source_name}] [timing] SUMMARY scrape={scrape_s:.1f}s "
+                f"(no rows, pipeline={time.perf_counter() - t_pipeline:.1f}s)"
+            )
             return f"WARNING: {source_name} - No items found"
 
     except Exception as e:
