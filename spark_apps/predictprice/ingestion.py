@@ -1,4 +1,5 @@
 import pymongo
+import os
 import pandas as pd
 import time
 from datetime import datetime, timezone
@@ -6,6 +7,14 @@ from urllib.parse import urlparse, urlunparse
 
 import config as cfg
 from contextlib import contextmanager
+
+# Raw scrape (buyee / scrapers ingest) → Spark NLP → ETL
+STATUS_RAW = "extracted_raw"
+STATUS_LAYER2 = "extracted_layer2"
+TERMINAL_STATUSES = frozenset({"loaded_mysql", "dropped_etl"})
+
+NLP_FETCH_BATCH = int(os.getenv("NLP_FETCH_BATCH", "5000"))
+NLP_UPDATE_BATCH = 500
 
 
 def redact_mongo_uri(uri: str | None) -> str:
@@ -205,7 +214,8 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
 
         df["source"] = source_name
         df["ingested_at"] = datetime.now(timezone.utc)
-        df["status"] = "extracted_layer2"
+        df["status"] = STATUS_RAW
+        df["nlp_done"] = False
         df["processed"] = False
         if "is_junk" not in df.columns:
             df["is_junk"] = False
@@ -278,6 +288,98 @@ def save_batch_to_datalake(df, source_name, custom_mongo_uri=None):
         return out
 
 
+def fetch_pending_nlp_docs(
+    source_name: str,
+    custom_mongo_uri=None,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Load raw Mongo docs for one source that still need Spark NLP."""
+    cap = limit if limit is not None else NLP_FETCH_BATCH
+    query = {
+        "source": source_name,
+        "status": STATUS_RAW,
+        "nlp_done": {"$ne": True},
+    }
+    with get_mongo_connection(custom_mongo_uri) as col:
+        if col is None:
+            return []
+        cursor = col.find(query).limit(cap)
+        return list(cursor)
+
+
+def apply_nlp_batch(
+    source_name: str,
+    df: pd.DataFrame,
+    custom_mongo_uri=None,
+) -> dict:
+    """Write NLP-enriched fields back to Mongo; mark nlp_done + extracted_layer2."""
+    out: dict = {
+        "updated": 0,
+        "stage": "init",
+        "rows_in_batch": 0,
+        "mongo_uri": redact_mongo_uri(custom_mongo_uri or cfg.MONGO_URI),
+    }
+    if df is None or df.empty:
+        out["stage"] = "empty_df"
+        return out
+
+    if "link" not in df.columns:
+        out["stage"] = "missing_link_column"
+        return out
+
+    out["rows_in_batch"] = len(df)
+    now = datetime.now(timezone.utc)
+    preserve = frozenset({"_id", "link", "source", "ingested_at"})
+
+    with get_mongo_connection(custom_mongo_uri) as col:
+        if col is None:
+            out["stage"] = "mongo_connection_failed"
+            return out
+
+        from pymongo import UpdateOne
+
+        updated = 0
+        ops: list[UpdateOne] = []
+        for row in df.to_dict("records"):
+            link = row.get("link")
+            if not link or (isinstance(link, float) and pd.isna(link)):
+                continue
+            link = str(link).strip()
+            if not link:
+                continue
+            payload = {
+                k: (None if isinstance(v, float) and pd.isna(v) else v)
+                for k, v in row.items()
+                if k not in preserve
+            }
+            payload["status"] = STATUS_LAYER2
+            payload["nlp_done"] = True
+            payload["nlp_at"] = now
+            ops.append(
+                UpdateOne(
+                    {"link": link, "source": source_name},
+                    {"$set": payload},
+                )
+            )
+            if len(ops) >= NLP_UPDATE_BATCH:
+                res = col.bulk_write(ops, ordered=False)
+                updated += res.modified_count
+                ops = []
+
+        if ops:
+            res = col.bulk_write(ops, ordered=False)
+            updated += res.modified_count
+
+        out["updated"] = updated
+        out["stage"] = "updated" if updated else "no_matches"
+        print(
+            f"[{source_name}] NLP apply: rows={out['rows_in_batch']} "
+            f"updated={updated} | stage={out['stage']}"
+        )
+        return out
+
+
 def create_indexes():
     """
     Tạo index cho MongoDB
@@ -305,6 +407,12 @@ def create_indexes():
 
             col.create_index([("source", 1), ("ingested_at", -1)], background=True)
             print("Đã tạo compound index cho 'source' + 'ingested_at'")
+
+            col.create_index(
+                [("source", 1), ("nlp_done", 1), ("status", 1)],
+                background=True,
+            )
+            print("Đã tạo compound index cho 'source' + 'nlp_done' + 'status'")
 
             print("\nDanh sách indexes hiện tại:")
             for idx in col.list_indexes():

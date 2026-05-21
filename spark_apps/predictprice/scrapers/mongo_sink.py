@@ -1,4 +1,4 @@
-"""Map parsed rows → MongoDB documents (NLP batch + ingestion)."""
+"""Map parsed rows → MongoDB raw documents (NLP runs later on Spark)."""
 
 from __future__ import annotations
 
@@ -42,9 +42,9 @@ def persist_rows(
     source_name: str,
     mongo_uri: str | None = None,
     *,
-    run_nlp: bool = True,
+    run_nlp: bool = False,
 ) -> dict:
-    """NLP-enrich batch and insert via ingestion.save_batch_to_datalake."""
+    """Insert raw scrape rows via ingestion.save_batch_to_datalake (no NLP)."""
     if not config.MONGO_ENABLED:
         return {"saved": 0, "stage": "mongo_disabled", "rows_in_batch": len(rows)}
 
@@ -52,14 +52,9 @@ def persist_rows(
     if df.empty:
         return {"saved": 0, "stage": "empty_df", "rows_in_batch": len(rows)}
 
-    if run_nlp:
-        from scrapers.nlp_pipeline import run_nlp_pipeline
-
-        df = run_nlp_pipeline(df, source_name)
-
     uri = mongo_uri or config.WORKER_MONGO_URI
     print(
-        f"[{source_name}] Mongo insert {len(df)} row(s) → "
+        f"[{source_name}] Mongo raw insert {len(df)} row(s) → "
         f"{ingestion.redact_mongo_uri(uri)} db={config.DB_NAME}"
     )
     return ingestion.save_batch_to_datalake(df, source_name, custom_mongo_uri=uri)

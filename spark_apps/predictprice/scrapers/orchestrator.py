@@ -78,7 +78,7 @@ def run_pipeline_source(
     proxy_key_index: int | None = None,
 ) -> str:
     """
-    Scrape one source: list (max_pages) → detail workers → NLP → Mongo.
+    Scrape one source: list (max_pages) → detail workers → raw Mongo (NLP on Spark).
     Returns status string for Spark driver (SUCCESS/WARNING/ERROR).
 
     proxy_key_index: when set (Spark mode), warm/use only keys[index] and

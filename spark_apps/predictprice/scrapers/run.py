@@ -1,9 +1,11 @@
-"""CLI entry — buyee lister/worker pipeline with max_pages + Mongo (+ NLP).
+"""CLI entry — buyee lister/worker pipeline (raw Mongo ingest; NLP via Spark main.py).
 
 Examples:
   python -m scrapers.run --sources mercari,rakuma,yahooauction
   python -m scrapers.run --sources mercari --max-pages 5
   python -m scrapers.run --sources mercari --no-lister --mongo-uri mongodb://...
+
+After ingest, run Spark NLP: make submitmain (main.py).
 """
 
 from __future__ import annotations

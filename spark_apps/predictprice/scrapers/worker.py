@@ -153,7 +153,7 @@ class WorkerThread(threading.Thread):
 
 
 class MongoBatchWriter:
-    """Thread-safe buffer; flush runs NLP + Mongo insert, then marks finished."""
+    """Thread-safe buffer; flush inserts raw rows (NLP on Spark)."""
 
     BATCH_SIZE = 25
 
@@ -185,7 +185,7 @@ class MongoBatchWriter:
         pids = [pid for pid, _ in batch]
         rows = [row for _, row in batch]
         stats = mongo_sink.persist_rows(
-            rows, self.source_name, self.mongo_uri, run_nlp=True
+            rows, self.source_name, self.mongo_uri, run_nlp=False
         )
         self.last_stats = stats
         saved = int(stats.get("saved") or 0)

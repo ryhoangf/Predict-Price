@@ -1,4 +1,4 @@
-"""NLP + junk detection — shared by Spark main and pipeline workers."""
+"""NLP + junk detection — Spark post-ingest (main.py) and local CLI."""
 
 from __future__ import annotations
 

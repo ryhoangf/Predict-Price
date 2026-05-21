@@ -80,10 +80,13 @@ def extract() -> pd.DataFrame:
         seven_days_ago = datetime.now() - timedelta(days=7)
         
         query = {
+            "status": "extracted_layer2",
+            "processed": False,
+            "is_junk": {"$ne": True},
             "$or": [
-                {"status": "extracted_layer2", "is_junk": {"$ne": True}},
-                {"processed": False, "is_junk": {"$ne": True}}
-            ]
+                {"nlp_done": True},
+                {"nlp_done": {"$exists": False}},
+            ],
         }
         
         data = list(col.find(query, {"_id": 0}))

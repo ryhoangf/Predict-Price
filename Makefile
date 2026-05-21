@@ -32,4 +32,4 @@ pack-zips:
 	python spark_apps/predictprice/pack_zips.py
 
 submitmain:
-	docker exec da-spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --py-files /opt/spark/apps/predictprice/scrapers.zip,/opt/spark/apps/predictprice/buyee_http.zip,/opt/spark/apps/predictprice/config.py,/opt/spark/apps/predictprice/ingestion.py /opt/spark/apps/predictprice/main.py
+	docker exec da-spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --py-files /opt/spark/apps/predictprice/scrapers.zip,/opt/spark/apps/predictprice/config.py,/opt/spark/apps/predictprice/ingestion.py /opt/spark/apps/predictprice/main.py
