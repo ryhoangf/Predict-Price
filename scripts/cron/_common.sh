@@ -82,13 +82,17 @@ pack_scrapers_zip() {
   fi
 }
 
-# Override via env: CRON_SLEEP_NLP_SEC=36000 CRON_SLEEP_ETL_SEC=7200
-: "${CRON_SLEEP_NLP_SEC:=36000}"
-: "${CRON_SLEEP_ETL_SEC:=7200}"
+# Default: no delay between steps. Override via env if needed, e.g.:
+#   CRON_SLEEP_NLP_SEC=36000 CRON_SLEEP_ETL_SEC=7200
+: "${CRON_SLEEP_NLP_SEC:=0}"
+: "${CRON_SLEEP_ETL_SEC:=0}"
 
 sleep_hours() {
   local sec="$1"
   local label="$2"
+  if [[ "$sec" -le 0 ]]; then
+    return 0
+  fi
   cron_log "Sleep ${sec}s (${label})..."
   sleep "$sec"
 }

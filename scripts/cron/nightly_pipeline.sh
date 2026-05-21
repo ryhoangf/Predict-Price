@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pipeline đêm: scrape → (10h) Spark NLP → (2h) ETL MySQL
+# Pipeline đêm: scrape → Spark NLP → ETL MySQL (mặc định không sleep giữa các bước)
 #
-# Crontab ví dụ (22:00 mỗi ngày, ETL ~14:00 hôm sau):
+# Crontab ví dụ (22:00 mỗi ngày):
 #   0 22 * * * REPO_ROOT=/root/Predict-Price bash /root/Predict-Price/scripts/cron/nightly_pipeline.sh >> /root/Predict-Price/logs/cron-pipeline.log 2>&1
 #
 # Test nhanh:
