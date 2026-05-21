@@ -9,6 +9,7 @@ curl-cffi>=0.7.0
 # Buyee WAF: harvest aws-waf-token qua headless Chromium (buyee_http/waf_solver.py)
 playwright>=1.40.0
 bs4
+lxml>=4.9.0
 docker
 sqlalchemy
 selenium
