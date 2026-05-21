@@ -1,11 +1,12 @@
 import os
 import re
-import json
 import threading
 import requests
 import time
 import random
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 from dotenv import load_dotenv
 
@@ -26,6 +27,81 @@ for _env_path in (_CONFIG_DIR / ".env", _DOCKER_PREDICTPRICE_ENV):
         load_dotenv(_env_path)
 if not (_CONFIG_DIR / ".env").is_file() and not _DOCKER_PREDICTPRICE_ENV.is_file():
     load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Static app defaults (trước đây config.json). Secrets / override runtime → .env
+# ---------------------------------------------------------------------------
+APP_DEFAULTS: dict[str, Any] = {
+    "platforms": {
+        "rakuma": {
+            "label": "Rakuma",
+            "menu_key": 3,
+            "search_url_template": (
+                "https://buyee.jp/rakuma/search?category_id={cat}&page={page}"
+            ),
+            "item_url_template": "https://buyee.jp/rakuma/item/{product_id}",
+            "item_id_regex": r"/rakuma/item/([a-f0-9]{20,})",
+            "description_url_template": None,
+        },
+        "jdirectitems": {
+            "label": "JDirectItems (Yahoo Auctions)",
+            "menu_key": 2,
+            "search_url_template": (
+                "https://buyee.jp/item/search/category/{cat}?page={page}"
+            ),
+            "item_url_template": (
+                "https://buyee.jp/item/jdirectitems/auction/{product_id}"
+            ),
+            "item_id_regex": r"/item/jdirectitems/auction/([a-z][0-9]+)",
+            "description_url_template": None,
+        },
+        "mercari": {
+            "label": "Mercari",
+            "menu_key": 1,
+            "search_url_template": (
+                "https://buyee.jp/mercari/search?limit=100&lang=en&page={page}"
+                "&searchType=filter&category_id={cat}"
+            ),
+            "item_url_template": "https://buyee.jp/mercari/item/{product_id}",
+            "item_id_regex": r"/mercari/item/([A-Za-z0-9]{10,})(?=[?\"#&\s])",
+            "description_url_template": (
+                "https://buyee.jp/mercari/item/description/{product_id}"
+            ),
+        },
+    },
+    "default_targets": [
+        {"platform": "mercari", "category_ids": ["859"]},
+        {"platform": "jdirectitems", "category_ids": ["2084317598"]},
+        {"platform": "rakuma", "category_ids": ["668"]},
+    ],
+    "listing": {
+        "max_pages_default": 1,
+        "max_pages_by_platform": {
+            "mercari": 1,
+            "rakuma": 1,
+            "jdirectitems": 1,
+        },
+    },
+    "files": {
+        "data_dir": "data/buyee_pipeline",
+        "pending_file": "pending.txt",
+        "finished_file": "finished_scraping.txt",
+        "lister_state_file": "lister_state.json",
+        "output_csv": "items.csv",
+        "log_file": "pipeline.log",
+    },
+    "concurrency": {"num_workers": 3, "min_workers": 1},
+    "mongo": {"enabled": True, "csv_enabled": False},
+}
+
+
+def _default_category_id(platform: str, fallback: str = "") -> str:
+    for target in APP_DEFAULTS.get("default_targets") or []:
+        if target.get("platform") == platform:
+            ids = target.get("category_ids") or []
+            if ids:
+                return str(ids[0])
+    return fallback
 
 # Cookie từ trình duyệt đã vào được buyee.jp (DevTools → Application → Cookie), dán nguyên chuỗi "name=value; ...".
 # Cần khi server trả AWS WAF / thách thức JS (requests không có JS → không có dl.m-goodsTable).
@@ -69,9 +145,114 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
-MAX_PAGES_MERCARI = _env_int("MAX_PAGES_MERCARI", 1)
-MAX_PAGES_RAKUMA = _env_int("MAX_PAGES_RAKUMA", 1)
-MAX_PAGES_YAHOO = _env_int("MAX_PAGES_YAHOO", 1)
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+_listing_cfg = APP_DEFAULTS.get("listing", {})
+_mongo_cfg = APP_DEFAULTS.get("mongo", {})
+_max_by_plat: dict[str, int] = {
+    str(k): int(v)
+    for k, v in (_listing_cfg.get("max_pages_by_platform") or {}).items()
+}
+MAX_PAGES_DEFAULT = _env_int(
+    "MAX_PAGES_DEFAULT",
+    int(_listing_cfg.get("max_pages_default", 1)),
+)
+MAX_PAGES_MERCARI = _env_int(
+    "MAX_PAGES_MERCARI",
+    _max_by_plat.get("mercari", MAX_PAGES_DEFAULT),
+)
+MAX_PAGES_RAKUMA = _env_int(
+    "MAX_PAGES_RAKUMA",
+    _max_by_plat.get("rakuma", MAX_PAGES_DEFAULT),
+)
+MAX_PAGES_YAHOO = _env_int(
+    "MAX_PAGES_YAHOO",
+    _max_by_plat.get("jdirectitems", MAX_PAGES_DEFAULT),
+)
+
+MONGO_ENABLED = _env_bool("MONGO_ENABLED", bool(_mongo_cfg.get("enabled", True)))
+CSV_ENABLED = _env_bool("CSV_ENABLED", bool(_mongo_cfg.get("csv_enabled", False)))
+
+SOURCE_TO_PLATFORM: dict[str, str] = {
+    "mercari": "mercari",
+    "rakuma": "rakuma",
+    "yahooauction": "jdirectitems",
+}
+PLATFORM_TO_SOURCE: dict[str, str] = {v: k for k, v in SOURCE_TO_PLATFORM.items()}
+
+
+def max_pages_for_source(source: str) -> int:
+    return {
+        "mercari": MAX_PAGES_MERCARI,
+        "rakuma": MAX_PAGES_RAKUMA,
+        "yahooauction": MAX_PAGES_YAHOO,
+    }.get(source, MAX_PAGES_DEFAULT)
+
+
+def max_pages_for_platform(platform: str) -> int:
+    src = PLATFORM_TO_SOURCE.get(platform)
+    if src:
+        return max_pages_for_source(src)
+    return _max_by_plat.get(platform, MAX_PAGES_DEFAULT)
+
+
+@dataclass(frozen=True)
+class PlatformSpec:
+    name: str
+    label: str
+    menu_key: int
+    search_url_template: str
+    item_url_template: str
+    item_id_regex: str
+    description_url_template: str | None
+
+
+_platforms_raw = APP_DEFAULTS.get("platforms") or {}
+PLATFORMS: dict[str, PlatformSpec] = {
+    name: PlatformSpec(
+        name=name,
+        label=spec["label"],
+        menu_key=int(spec["menu_key"]),
+        search_url_template=spec["search_url_template"],
+        item_url_template=spec["item_url_template"],
+        item_id_regex=spec["item_id_regex"],
+        description_url_template=spec.get("description_url_template"),
+    )
+    for name, spec in _platforms_raw.items()
+}
+PLATFORMS_BY_KEY: dict[int, PlatformSpec] = {
+    p.menu_key: p for p in PLATFORMS.values()
+}
+
+_files_cfg = APP_DEFAULTS.get("files", {})
+_pipeline_data_rel = _files_cfg.get("data_dir", "data/buyee_pipeline")
+_pipeline_explicit = os.getenv("PIPELINE_DATA_DIR", "").strip()
+if _pipeline_explicit:
+    PIPELINE_DATA_DIR = Path(_pipeline_explicit).resolve()
+elif os.path.isdir("/opt/spark/apps/predictprice"):
+    PIPELINE_DATA_DIR = Path("/opt/spark/apps/predictprice") / _pipeline_data_rel
+else:
+    PIPELINE_DATA_DIR = (_CONFIG_DIR / _pipeline_data_rel).resolve()
+PIPELINE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PENDING_FILE = PIPELINE_DATA_DIR / _files_cfg.get("pending_file", "pending.txt")
+FINISHED_FILE = PIPELINE_DATA_DIR / _files_cfg.get("finished_file", "finished_scraping.txt")
+LISTER_STATE_FILE = PIPELINE_DATA_DIR / _files_cfg.get(
+    "lister_state_file", "lister_state.json"
+)
+OUTPUT_CSV = PIPELINE_DATA_DIR / _files_cfg.get("output_csv", "items.csv")
+PIPELINE_LOG_FILE = PIPELINE_DATA_DIR / _files_cfg.get("log_file", "pipeline.log")
+
+_conc_cfg = APP_DEFAULTS.get("concurrency", {})
+PIPELINE_NUM_WORKERS = _env_int(
+    "PIPELINE_NUM_WORKERS",
+    int(_conc_cfg.get("num_workers", 3)),
+)
+PIPELINE_MIN_WORKERS = int(_conc_cfg.get("min_workers", 1))
 
 WORKER_MONGO_URI = os.getenv(
     "WORKER_MONGO_URI",
@@ -432,12 +613,28 @@ WORKER_DELAY_SEC = buyee_settings.WORKER_DELAY_SEC
 
 ENDPOINTS = {
     "mercari_iframe": "https://buyee.jp/mercari/search",
-    "mercari_category_id": os.getenv("MERCARI_CATEGORY_ID", "859"),
+    "mercari_category_id": os.getenv(
+        "MERCARI_CATEGORY_ID", _default_category_id("mercari", "859")
+    ),
     "rakuma_search": "https://buyee.jp/rakuma/search",
-    "rakuma_category_id": os.getenv("RAKUMA_CATEGORY_ID", "668"),
+    "rakuma_category_id": os.getenv(
+        "RAKUMA_CATEGORY_ID", _default_category_id("rakuma", "668")
+    ),
     "yahoo_base": "https://buyee.jp/item/search/category",
-    "yahoo_category_id": os.getenv("YAHOO_CATEGORY_ID", "2084317598"),
+    "yahoo_category_id": os.getenv(
+        "YAHOO_CATEGORY_ID", _default_category_id("jdirectitems", "2084317598")
+    ),
 }
+
+
+def category_id_for_source(source: str) -> str:
+    if source == "mercari":
+        return ENDPOINTS["mercari_category_id"]
+    if source == "rakuma":
+        return ENDPOINTS["rakuma_category_id"]
+    if source == "yahooauction":
+        return ENDPOINTS["yahoo_category_id"]
+    raise ValueError(f"unknown source: {source!r}")
 
 
 def normalize_link(href: str) -> str:

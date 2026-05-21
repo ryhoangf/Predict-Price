@@ -237,218 +237,26 @@ from pyspark import SparkContext, SparkConf
 
 def process_source_on_worker(source_name):
     """
-    Hàm này chạy trên Worker Node để scrape và lưu dữ liệu vào MongoDB
+    Hàm này chạy trên Worker Node: lister (max_pages) → detail → NLP → Mongo.
     """
     import sys
     if '/opt/spark/apps/predictprice' not in sys.path:
         sys.path.append('/opt/spark/apps/predictprice')
-    import pandas as pd
-    import time
-    from scrapers.mercari_scraping import scrape_mercari
-    from scrapers.rakuma_scraping import scrape_rakuma
-    from scrapers.yahooauction_scraping import scrape_yahooauction
-    import ingestion
     import config as cfg
+    from scrapers.orchestrator import run_pipeline_source
 
-    def _nonempty_explanation_count(dframe: pd.DataFrame) -> int:
-        if dframe is None or dframe.empty or "explanation" not in dframe.columns:
-            return 0
-        n = 0
-        for v in dframe["explanation"]:
-            if v is None:
-                continue
-            if isinstance(v, float) and pd.isna(v):
-                continue
-            t = str(v).strip()
-            if t and t.lower() != "nan":
-                n += 1
-        return n
-
-    print(f"--- [Worker] Bắt đầu xử lý nguồn: {source_name} ---")
-    cfg.ensure_buyee_http_pool()
+    print(f"--- [Worker] Bắt đầu pipeline: {source_name} ---")
     print(
-        f"[{source_name}] Buyee HTTP: proxy_keys={len(cfg.PROXY_XOAY_KEYS)} "
-        f"detail_workers={cfg.DETAIL_FETCH_MAX_WORKERS} | "
-        f"curl_cffi={cfg.prefer_curl_cffi_for_buyee()} | "
-        f"impersonate={cfg.BUYEE_CURL_IMPERSONATE} | "
-        f"waf_warmup={cfg.buyee_settings.BUYEE_WAF_WARMUP}"
+        f"[{source_name}] max_pages={cfg.max_pages_for_source(source_name)} "
+        f"mongo={cfg.MONGO_ENABLED} csv={cfg.CSV_ENABLED} "
+        f"keys={len(cfg.PROXY_XOAY_KEYS)}"
     )
-    if not cfg.PROXY_XOAY_KEYS and cfg.USE_PROXY:
-        print(
-            f"[{source_name}] CẢNH BÁO: không có proxy keys — "
-            f"đặt PROXY_KEYS_FILE hoặc PROXY_XOAY_KEYS hoặc PROXY_XOAY_KEY."
-        )
-    if not cfg.prefer_curl_cffi_for_buyee():
-        print(
-            f"[{source_name}] CẢNH BÁO: không dùng curl-cffi — Buyee hay 202 WAF."
-        )
-
-    df = pd.DataFrame()
     try:
-        t_pipeline = time.perf_counter()
-        # 1. Scrape dữ liệu theo từng nguồn
-        t_scrape = time.perf_counter()
-        if source_name == 'mercari':
-            df = scrape_mercari(end_page=cfg.MAX_PAGES_MERCARI)
-        elif source_name == 'rakuma':
-            df = scrape_rakuma(end_page=cfg.MAX_PAGES_RAKUMA)
-        elif source_name == 'yahooauction':
-            df = scrape_yahooauction(end_page=cfg.MAX_PAGES_YAHOO)
-        else:
-            return f"ERROR: {source_name} - Unknown source"
-        scrape_s = time.perf_counter() - t_scrape
-        print(f"[{source_name}] [timing] scrape={scrape_s:.1f}s")
-
-        # 2. Lưu vào MongoDB từ Worker (Distributed Write)
-        if not df.empty:
-            print(
-                f"[{source_name}] Sau scrape: {_nonempty_explanation_count(df)}/{len(df)} có explanation (text thô)."
-            )
-            from NLP.title_nlp import PhoneInfoExtractor
-            from NLP.item_explanation import ItemExplanationExtractor
-
-            print(f"[{source_name}] Bắt đầu chạy NLP Pipeline cho {len(df)} bản ghi...")
-            t_nlp = time.perf_counter()
-            phone_nlp = PhoneInfoExtractor()
-            item_nlp = ItemExplanationExtractor()
-
-            # Layer 2: Trích xuất Specs (FlashText + Smart Window)
-            df = phone_nlp.process_dataframe(df, title_column='name')
-            df = item_nlp.process_dataframe(df, explanation_column='explanation')
-            print(
-                f"[{source_name}] Sau NLP: {_nonempty_explanation_count(df)}/{len(df)} có explanation."
-            )
-            
-            try:
-                import joblib
-                import lightgbm as lgb
-                import scipy.sparse as sp
-                import re
-
-                print(f"[{source_name}] Đang chạy Layer 1: Lọc rác (Junk Detection)...")
-                
-                model_dir = '/opt/spark/apps/predictprice/NLP/models'
-                tfidf_path = f'{model_dir}/tfidf_junk_v1.pkl'
-                lgbm_path = f'{model_dir}/lgbm_junk_v1.txt'
-
-                # Load models
-                tfidf = joblib.load(tfidf_path)
-                junk_model = lgb.Booster(model_file=lgbm_path)
-
-                # Chuẩn bị Data: Gom name và explanation
-                df['name_clean'] = df['name'].fillna('')
-                df['expl_clean'] = df['explanation'].fillna('')
-                combined_text = df['name_clean'] + " " + df['expl_clean']
-
-                # Chuẩn bị Data: Xử lý giá (Loại bỏ chữ 'YEN', dấu phẩy...)
-                def clean_price(p):
-                    if pd.isna(p): return 0
-                    nums = re.sub(r"[^\d]", "", str(p))
-                    return int(nums) if nums else 0
-                
-                prices_array = df['price'].apply(clean_price).values.reshape(-1, 1)
-
-                # Biến đổi (Transform) bằng TF-IDF và Stack với Giá
-                X_text = tfidf.transform(combined_text)
-                X_final = sp.hstack((X_text, prices_array), format='csr')
-
-                # Predict: Ngưỡng 0.5 (Lớn hơn 0.5 là rác)
-                y_pred_prob = junk_model.predict(X_final)
-                df['is_junk'] = y_pred_prob > 0.5
-                
-                junk_count = df['is_junk'].sum()
-                print(f"[{source_name}] Layer 1 đã dọn dẹp: Phát hiện {junk_count}/{len(df)} tin rác!")
-
-            except Exception as ml_err:
-                print(f"[{source_name}] Lỗi chạy Layer 1 (LightGBM): {ml_err}. Tạm thời bỏ qua (is_junk=False)")
-                df['is_junk'] = False
-
-            nlp_s = time.perf_counter() - t_nlp
-            print(
-                f"[{source_name}] [timing] nlp+junk_layer1={nlp_s:.1f}s "
-                f"(NLP + junk model; Mongo chưa gồm)"
-            )
-
-            # Lưu vào MongoDB
-            t_mongo = time.perf_counter()
-            print(
-                f"[{source_name}] DEBUG worker Mongo: "
-                f"{ingestion.redact_mongo_uri(cfg.WORKER_MONGO_URI)} | "
-                f"db={cfg.DB_NAME} coll={cfg.COLLECTION_NAME}"
-            )
-            ingest_stats = ingestion.save_batch_to_datalake(
-                df, source_name, custom_mongo_uri=cfg.WORKER_MONGO_URI
-            )
-            mongo_wall_s = time.perf_counter() - t_mongo
-            ded_s = (ingest_stats or {}).get("dedup_s")
-            br_s = (ingest_stats or {}).get("build_records_s")
-            ins_s = (ingest_stats or {}).get("insert_s")
-            if ded_s is not None and br_s is not None and ins_s is not None:
-                print(
-                    f"[{source_name}] [timing] mongo wall={mongo_wall_s:.1f}s "
-                    f"dedup={ded_s:.2f}s build_records={br_s:.2f}s insert={ins_s:.2f}s"
-                )
-            else:
-                print(
-                    f"[{source_name}] [timing] mongo wall={mongo_wall_s:.1f}s "
-                    f"(dedup/build/insert chưa ghi đủ — xem stage)"
-                )
-            pipeline_s = time.perf_counter() - t_pipeline
-            print(
-                f"[{source_name}] [timing] SUMMARY "
-                f"scrape={scrape_s:.1f}s + nlp+junk={nlp_s:.1f}s + mongo={mongo_wall_s:.1f}s "
-                f"≈ pipeline={pipeline_s:.1f}s"
-            )
-
-            saved = ingest_stats.get("saved", 0) if ingest_stats else 0
-            stage = (ingest_stats or {}).get("stage", "?")
-            if stage == "mongo_connection_failed":
-                return f"ERROR: {source_name} - Mongo không kết nối được (xem log [mongo])."
-            fail_early = (
-                "dedup_query_failed",
-                "dedup_query_timeout",
-                "link_column_invalid",
-                "missing_link_column",
-            )
-            if stage in fail_early:
-                detail = (ingest_stats or {}).get("dedup_error", "")
-                return (
-                    f"ERROR: {source_name} - ingest dừng (stage={stage})"
-                    f"{(' | ' + detail) if detail else ''}"
-                )
-            if stage == "no_valid_links":
-                return (
-                    f"WARN: {source_name} - NLP {len(df)} dòng nhưng không có link hợp lệ "
-                    f"để ingest (stage={stage})"
-                )
-            if stage == "all_duplicates":
-                return (
-                    f"OK: {source_name} - NLP {len(df)} dòng, mongo_inserted=0 "
-                    f"(toàn URL đã có | stage={stage})"
-                )
-            if saved == 0 and (ingest_stats or {}).get("after_dedup", 0) > 0:
-                return (
-                    f"WARN: {source_name} - NLP {len(df)} dòng, "
-                    f"sau dedup {(ingest_stats or {}).get('after_dedup')} nhưng saved=0 "
-                    f"(stage={stage})"
-                )
-            return (
-                f"SUCCESS: {source_name} - NLP rows={len(df)}, "
-                f"mongo_inserted={saved}, stage={stage}"
-            )
-        else:
-            print(
-                f"[{source_name}] [timing] SUMMARY scrape={scrape_s:.1f}s "
-                f"(no rows, pipeline={time.perf_counter() - t_pipeline:.1f}s)"
-            )
-            keys_path = cfg.PROXY_KEYS_FILE
-            hint = (
-                f"keys={len(cfg.PROXY_XOAY_KEYS)} "
-                f"keys_file={keys_path} exists={keys_path.is_file()} | "
-                f"last_fetch={cfg.last_fetch_error() or 'n/a'}"
-            )
-            return f"WARNING: {source_name} - No items found ({hint})"
-
+        return run_pipeline_source(
+            source_name,
+            mongo_uri=cfg.WORKER_MONGO_URI,
+            warm_waf=cfg.buyee_settings.BUYEE_WAF_WARMUP,
+        )
     except Exception as e:
         import traceback
         traceback_str = traceback.format_exc()
