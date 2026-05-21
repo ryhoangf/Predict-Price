@@ -1,4 +1,4 @@
-"""Detail workers — fetch item pages, optional CSV, Mongo batch persist."""
+"""Detail workers — fetch item pages, batch persist to Mongo (buyee.jp style)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import threading
 import time
 
 import config
-from buyee_http.http_client import FetchError
+from buyee_http.http_client import fetch
 from scrapers import pipeline_state
 from scrapers.buyee_parser import parse_item_page
 from buyee_http.proxy_manager import WorkerProxy
@@ -19,22 +19,26 @@ SENTINEL = ("__STOP__", "", -1, "")
 
 
 def feed_queue(
-    source_name: str,
+    sources: list[str],
     q: "queue.Queue",
     stop_event: threading.Event,
     lister_done: threading.Event,
+    worker_count: int,
 ) -> threading.Thread:
-    seen: set[str] = set(pipeline_state.load_finished(source_name))
+    seen: set[str] = set()
+    for src in sources:
+        seen.update(pipeline_state.load_finished(src))
 
     def loop() -> None:
         while not stop_event.is_set():
-            for entry in pipeline_state.load_pending(source_name):
-                pid = entry[3]
-                if pid not in seen:
-                    seen.add(pid)
-                    q.put(entry)
+            for src in sources:
+                for entry in pipeline_state.load_pending(src):
+                    pid = entry[3]
+                    if pid not in seen:
+                        seen.add(pid)
+                        q.put(entry)
             if lister_done.is_set():
-                for _ in range(config.PIPELINE_NUM_WORKERS):
+                for _ in range(worker_count):
                     q.put(SENTINEL)
                 return
             if stop_event.wait(2.0):
@@ -48,19 +52,17 @@ def feed_queue(
 class WorkerThread(threading.Thread):
     def __init__(
         self,
-        source_name: str,
         idx: int,
         q: "queue.Queue",
         worker_proxy: WorkerProxy | None,
         stop_event: threading.Event,
-        mongo_writer: "MongoBatchWriter | None" = None,
+        mongo_writers: dict[str, "MongoBatchWriter"] | None = None,
     ):
         super().__init__(name=f"worker-{idx}", daemon=True)
-        self.source_name = source_name
         self.q = q
         self.worker_proxy = worker_proxy
         self.stop_event = stop_event
-        self.mongo_writer = mongo_writer
+        self.mongo_writers = mongo_writers or {}
         self.processed = 0
         self.failed = 0
 
@@ -97,7 +99,11 @@ class WorkerThread(threading.Thread):
             self.failed,
         )
 
+    def _source_name(self, platform: str) -> str:
+        return config.PLATFORM_TO_SOURCE.get(platform, platform)
+
     def _process(self, platform: str, category_id: str, page: int, pid: str) -> None:
+        source_name = self._source_name(platform)
         spec = config.PLATFORMS[platform]
         url = spec.item_url_template.format(product_id=pid)
         ref_key = {
@@ -108,22 +114,14 @@ class WorkerThread(threading.Thread):
         referer = config.REFERERS.get(ref_key, config.REFERERS["mercari"])
         hdr = config.buyee_page_headers(referer=referer)
 
-        resp = config.fetch(url, hdr, worker_proxy=self.worker_proxy)
-        if resp is None:
-            raise FetchError(config.last_fetch_error() or f"fetch failed for {url}")
-        html = resp.text
+        html = fetch(url, self.worker_proxy, extra_headers=hdr)
 
         def fetcher(follow_url: str) -> str:
-            r = config.fetch(
+            return fetch(
                 follow_url,
-                config.buyee_page_headers(referer=url),
-                worker_proxy=self.worker_proxy,
+                self.worker_proxy,
+                extra_headers=config.buyee_page_headers(referer=url),
             )
-            if r is None:
-                raise FetchError(
-                    config.last_fetch_error() or f"fetch failed for {follow_url}"
-                )
-            return r.text
 
         row = parse_item_page(
             html,
@@ -134,13 +132,14 @@ class WorkerThread(threading.Thread):
         )
 
         if config.CSV_ENABLED:
-            pipeline_state.append_csv(self.source_name, row)
+            pipeline_state.append_csv(source_name, row)
 
-        if self.mongo_writer is not None:
-            self.mongo_writer.add(pid, row)
+        writer = self.mongo_writers.get(source_name)
+        if writer is not None:
+            writer.add(pid, row)
         else:
-            pipeline_state.mark_finished(self.source_name, pid)
-            pipeline_state.remove_pending(self.source_name, pid)
+            pipeline_state.mark_finished(source_name, pid)
+            pipeline_state.remove_pending(source_name, pid)
 
         log.info(
             "[%s] OK %s/%s page=%s name=%r",

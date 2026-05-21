@@ -1,4 +1,4 @@
-"""Paginated lister — queues product IDs to pending.txt with max_pages cap."""
+"""Paginated lister — queues product IDs to per-source pending.txt."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 
 import config
-from buyee_http.http_client import FetchError
+from buyee_http.http_client import FetchError, fetch_response
 from scrapers import pipeline_state
 from scrapers.buyee_parser import parse_search_page
 from buyee_http.proxy_manager import WorkerProxy
@@ -24,17 +24,19 @@ class Target:
         return f"{self.platform}:{self.category_id}"
 
 
+def _source_for_platform(platform: str) -> str:
+    return config.PLATFORM_TO_SOURCE.get(platform, platform)
+
+
 class ListerThread(threading.Thread):
     def __init__(
         self,
-        source_name: str,
         targets: list[Target],
         worker_proxy: WorkerProxy | None,
         stop_event: threading.Event,
         max_pages: int | None = None,
     ):
         super().__init__(name="lister", daemon=True)
-        self.source_name = source_name
         self.targets = targets
         self.worker_proxy = worker_proxy
         self.stop_event = stop_event
@@ -49,10 +51,12 @@ class ListerThread(threading.Thread):
             return self.max_pages
         return config.max_pages_for_platform(t.platform)
 
-    def _crawl_target(self, t: Target, s: dict) -> None:
+    def _crawl_target(self, t: Target) -> None:
+        source_name = _source_for_platform(t.platform)
         spec = config.PLATFORMS[t.platform]
         key = self._state_key(t)
         page_cap = self._page_cap(t)
+        s = pipeline_state.load_lister_state(source_name)
         s.setdefault(key, {})
         page = int(s[key].get("next_page", 1))
         last_page: int | None = s[key].get("last_page")
@@ -75,12 +79,9 @@ class ListerThread(threading.Thread):
             }.get(t.platform, "mercari")
             hdr = config.buyee_page_headers(referer=config.REFERERS[ref_key])
             try:
-                resp = config.fetch(url, hdr, worker_proxy=self.worker_proxy)
-                if resp is None:
-                    raise FetchError(
-                        config.last_fetch_error() or f"fetch failed for {url}"
-                    )
-                html = resp.text
+                _status, html = fetch_response(
+                    url, self.worker_proxy, extra_headers=hdr
+                )
             except FetchError as exc:
                 log.error(
                     "Lister[%s] failed page %s: %s — sleeping 30s", key, page, exc
@@ -98,7 +99,7 @@ class ListerThread(threading.Thread):
                 display_last = page_cap
 
             entries = [(t.platform, t.category_id, page, pid) for pid in ids]
-            added = pipeline_state.append_pending(self.source_name, entries)
+            added = pipeline_state.append_pending(source_name, entries)
             self.discovered_total += added
             log.info(
                 "Lister[%s] page %s/%s -> %s ids (new=%s, total=%s)",
@@ -112,7 +113,7 @@ class ListerThread(threading.Thread):
 
             next_page = page if not ids else page + 1
             s[key] = {"next_page": next_page, "last_page": last_page}
-            pipeline_state.save_lister_state(self.source_name, s)
+            pipeline_state.save_lister_state(source_name, s)
 
             if not ids:
                 log.info("Lister[%s] no items on page %s — assuming end.", key, page)
@@ -127,7 +128,6 @@ class ListerThread(threading.Thread):
                 return
 
     def run(self) -> None:
-        s = pipeline_state.load_lister_state(self.source_name)
         log.info(
             "Lister start: %d target(s): %s",
             len(self.targets),
@@ -137,7 +137,7 @@ class ListerThread(threading.Thread):
             if self.stop_event.is_set():
                 break
             try:
-                self._crawl_target(t, s)
+                self._crawl_target(t)
             except Exception:  # noqa: BLE001
                 log.exception("Lister[%s] unhandled error", self._state_key(t))
         log.info("Lister exited. Total new IDs queued: %s", self.discovered_total)

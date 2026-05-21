@@ -1,11 +1,11 @@
-"""CLI entry — buyee lister/worker pipeline (raw Mongo ingest; NLP via Spark main.py).
+"""CLI entry — buyee.jp-style scrape → raw Mongo (NLP via Spark main.py).
 
 Examples:
-  python -m scrapers.run --sources mercari,rakuma,yahooauction
-  python -m scrapers.run --sources mercari --max-pages 5
-  python -m scrapers.run --sources mercari --no-lister --mongo-uri mongodb://...
+  python -m scrapers.run
+  python -m scrapers.run --max-pages 5
+  python -m scrapers.run --no-lister --workers 3
 
-After ingest, run Spark NLP: make submitmain (main.py).
+After ingest: make submitmain (main.py).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ if ROOT not in sys.path:
 
 import config
 from scrapers import pipeline_state
-from scrapers.orchestrator import run_pipeline_source
+from scrapers.orchestrator import run_pipeline
 
 
 def main() -> int:
@@ -34,7 +34,7 @@ def main() -> int:
         "--max-pages",
         type=int,
         default=0,
-        help="cap listing pages per source (0 = use config/env MAX_PAGES_*)",
+        help="cap listing pages per target (0 = use config/env MAX_PAGES_*)",
     )
     ap.add_argument(
         "--mongo-uri",
@@ -45,7 +45,7 @@ def main() -> int:
         "--workers",
         type=int,
         default=0,
-        help=f"detail workers (default {config.PIPELINE_NUM_WORKERS})",
+        help=f"detail workers (default {config.PIPELINE_NUM_WORKERS}, capped by # proxy keys)",
     )
     ap.add_argument(
         "--no-lister",
@@ -80,26 +80,22 @@ def main() -> int:
     mongo_uri = args.mongo_uri.strip() or None
     worker_count = args.workers if args.workers > 0 else None
 
-    exit_code = 0
-    for src in sources:
-        print(f"\n=== Pipeline: {src} ===")
-        key_idx = config.proxy_key_index_for_source(src)
-        msg = run_pipeline_source(
-            src,
-            max_pages=max_pages,
-            mongo_uri=mongo_uri,
-            no_lister=args.no_lister,
-            worker_count=worker_count,
-            warm_waf=not args.skip_waf_warmup,
-            proxy_key_index=key_idx,
-        )
-        print(msg)
-        if msg.startswith("ERROR"):
-            exit_code = 2
-        elif msg.startswith("WARNING") and exit_code == 0:
-            exit_code = 1
+    print(f"\n=== Pipeline: {', '.join(sources)} ===")
+    msg = run_pipeline(
+        sources,
+        max_pages=max_pages,
+        mongo_uri=mongo_uri,
+        no_lister=args.no_lister,
+        worker_count=worker_count,
+        warm_waf=not args.skip_waf_warmup,
+    )
+    print(msg)
 
-    return exit_code
+    if msg.startswith("ERROR"):
+        return 2
+    if msg.startswith("WARNING") or msg.startswith("WARN"):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

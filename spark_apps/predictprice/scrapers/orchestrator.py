@@ -1,4 +1,4 @@
-"""Run buyee lister + detail workers for one Spark source (mercari/rakuma/yahooauction)."""
+"""Run buyee lister + detail workers (buyee.jp style) → raw Mongo."""
 
 from __future__ import annotations
 
@@ -15,122 +15,109 @@ from scrapers.worker import MongoBatchWriter, WorkerThread, feed_queue
 log = logging.getLogger("orchestrator")
 
 
-def _cap_workers(requested: int, assignments: ProxyAssignments | None) -> int:
-    n = max(config.PIPELINE_MIN_WORKERS, requested)
-    if assignments is not None:
-        n = min(n, len(assignments))
-    return n
+def _targets_for_sources(sources: list[str]) -> list[Target]:
+    out: list[Target] = []
+    for source_name in sources:
+        if source_name not in config.SOURCE_TO_PLATFORM:
+            raise ValueError(f"Unknown source: {source_name}")
+        platform = config.SOURCE_TO_PLATFORM[source_name]
+        category_id = config.category_id_for_source(source_name)
+        out.append(Target(platform=platform, category_id=category_id))
+    return out
 
 
-def _init_proxy_assignments(
-    source_name: str,
-    proxy_key_index: int | None,
-    warm_waf: bool,
-) -> tuple[ProxyAssignments | None, str | None]:
-    """Warm proxy (+ optional WAF) for full pool or a single key slot."""
-    if not config.USE_PROXY:
-        return None, None
-
-    keys = load_keys()
-    if not keys:
-        return (
-            None,
-            f"ERROR: {source_name} - no proxy keys "
-            f"(PROXY_KEYS_FILE={config.PROXY_KEYS_FILE})",
-        )
-
-    slot_label = "all"
-    if proxy_key_index is not None:
-        if proxy_key_index < 0 or proxy_key_index >= len(keys):
-            return (
-                None,
-                f"ERROR: {source_name} - proxy_key_index={proxy_key_index} "
-                f"out of range (keys={len(keys)})",
-            )
-        keys = [keys[proxy_key_index]]
-        slot_label = f"key{proxy_key_index}"
-
-    assignments = ProxyAssignments(keys)
-    ok = assignments.warm_up_all()
-    if ok == 0:
-        return None, f"ERROR: {source_name} - proxy warm-up failed ({slot_label})"
-
-    if warm_waf and config.buyee_settings.BUYEE_WAF_WARMUP:
-        assignments.warm_waf_all(len(assignments))
-
-    log.info(
-        "[%s] proxy pool ready: slot=%s workers_in_pool=%s",
-        source_name,
-        slot_label,
-        len(assignments),
-    )
-    return assignments, None
-
-
-def run_pipeline_source(
-    source_name: str,
+def run_pipeline(
+    sources: list[str],
     *,
     max_pages: int | None = None,
     mongo_uri: str | None = None,
     no_lister: bool = False,
     worker_count: int | None = None,
     warm_waf: bool = True,
-    proxy_key_index: int | None = None,
 ) -> str:
     """
-    Scrape one source: list (max_pages) → detail workers → raw Mongo (NLP on Spark).
-    Returns status string for Spark driver (SUCCESS/WARNING/ERROR).
-
-    proxy_key_index: when set (Spark mode), warm/use only keys[index] and
-    default to 1 detail worker sharing that slot with the lister.
+    Buyee.jp-style scrape: one proxy warm-up, N workers (capped by # keys),
+    one lister for all targets → raw Mongo per source.
     """
-    if source_name not in config.SOURCE_TO_PLATFORM:
-        return f"ERROR: {source_name} - Unknown source"
+    if not sources:
+        return "ERROR: no sources specified"
 
-    platform = config.SOURCE_TO_PLATFORM[source_name]
-    category_id = config.category_id_for_source(source_name)
-    page_cap = max_pages if max_pages is not None else config.max_pages_for_source(source_name)
+    try:
+        targets = _targets_for_sources(sources)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+
     uri = mongo_uri or config.WORKER_MONGO_URI
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s",
     )
 
-    # Dedicated key per Spark task — do not init global pool with all keys.
-    if proxy_key_index is None:
-        config.ensure_buyee_http_pool(warm_waf=warm_waf)
+    n_workers = worker_count or config.PIPELINE_NUM_WORKERS
+    if n_workers < config.PIPELINE_MIN_WORKERS:
+        n_workers = config.PIPELINE_MIN_WORKERS
 
-    assignments, proxy_err = _init_proxy_assignments(
-        source_name, proxy_key_index, warm_waf
-    )
-    if proxy_err:
-        return proxy_err
+    assignments: ProxyAssignments | None = None
+    if config.USE_PROXY:
+        keys = load_keys()
+        if not keys:
+            return (
+                f"ERROR: no proxy keys "
+                f"(PROXY_KEYS_FILE={config.PROXY_KEYS_FILE})"
+            )
+        assignments = ProxyAssignments(keys)
+        if n_workers > len(assignments):
+            log.warning(
+                "worker_count=%s > %s key(s) — capping to %s",
+                n_workers,
+                len(assignments),
+                len(assignments),
+            )
+            n_workers = len(assignments)
 
-    if proxy_key_index is not None:
-        n_workers = 1
-    else:
-        n_workers = _cap_workers(
-            worker_count or config.PIPELINE_NUM_WORKERS,
-            assignments,
-        )
+        log.info("Warming up %s proxy key(s)...", len(assignments))
+        ok = assignments.warm_up_all()
+        log.info("Proxy warm-up: %s/%s keys returned a proxy", ok, len(assignments))
+        if ok == 0:
+            return "ERROR: proxy warm-up failed (0 keys)"
+
+        if warm_waf and config.buyee_settings.BUYEE_WAF_WARMUP:
+            log.info("Harvesting WAF cookies for %s worker slot(s)...", n_workers)
+            for i in range(n_workers):
+                wp = assignments.for_worker(i)
+                bundle = wp.refresh_waf(force=True)
+                if bundle is None or bundle.is_empty():
+                    log.warning("[worker-%s] WAF warm-up failed; will retry lazily", i)
+                else:
+                    log.info(
+                        "[worker-%s] WAF cookie ready (proxy=%s)",
+                        i,
+                        bundle.proxy_endpoint,
+                    )
+
     config.PIPELINE_NUM_WORKERS = n_workers
+    log.info(
+        "Pipeline start: workers=%s proxy=%s targets=%s",
+        n_workers,
+        assignments is not None,
+        [str(t) for t in targets],
+    )
 
     if config.MONGO_ENABLED:
         from scrapers import mongo_sink
 
         mongo_sink.ensure_indexes(uri)
 
-    targets = [Target(platform=platform, category_id=category_id)]
     stop_event = threading.Event()
     lister_done = threading.Event()
     q: queue.Queue = queue.Queue(maxsize=10_000)
 
-    mongo_writer = (
-        MongoBatchWriter(source_name, uri) if config.MONGO_ENABLED else None
-    )
+    mongo_writers: dict[str, MongoBatchWriter] = {}
+    if config.MONGO_ENABLED:
+        for src in sources:
+            mongo_writers[src] = MongoBatchWriter(src, uri)
 
-    feeder = feed_queue(source_name, q, stop_event, lister_done)
+    feeder = feed_queue(sources, q, stop_event, lister_done, n_workers)
 
     workers: list[WorkerThread] = []
     for i in range(n_workers):
@@ -138,20 +125,18 @@ def run_pipeline_source(
         if wp:
             wp.owner = f"worker-{i}"
         workers.append(
-            WorkerThread(
-                source_name, i, q, wp, stop_event, mongo_writer=mongo_writer
-            )
+            WorkerThread(i, q, wp, stop_event, mongo_writers=mongo_writers)
         )
     for w in workers:
         w.start()
 
     lister: ListerThread | None = None
-    if not no_lister:
+    if not no_lister and targets:
         lister_proxy = assignments.for_worker(0) if assignments else None
         if lister_proxy:
             lister_proxy.owner = "lister"
         lister = ListerThread(
-            source_name, targets, lister_proxy, stop_event, max_pages=page_cap
+            targets, lister_proxy, stop_event, max_pages=max_pages
         )
         lister.start()
 
@@ -166,48 +151,38 @@ def run_pipeline_source(
     finally:
         stop_event.set()
 
-    if mongo_writer is not None:
-        stats = mongo_writer.flush()
-    else:
-        stats = {"saved": 0, "stage": "mongo_disabled"}
+    mongo_stats: dict[str, dict] = {}
+    for src, writer in mongo_writers.items():
+        mongo_stats[src] = writer.flush()
 
     processed = sum(w.processed for w in workers)
     failed = sum(w.failed for w in workers)
-    saved = int(stats.get("saved") or 0)
-    stage = str(stats.get("stage") or "")
+    saved_total = sum(int(s.get("saved") or 0) for s in mongo_stats.values())
 
     if processed == 0 and not no_lister:
-        key_hint = (
-            f"proxy_key_index={proxy_key_index}"
-            if proxy_key_index is not None
-            else f"keys={len(config.PROXY_XOAY_KEYS)}"
+        return (
+            f"WARNING: No items processed "
+            f"(workers={n_workers} keys={len(assignments) if assignments else 0} "
+            f"targets={len(targets)})"
         )
-        hint = (
-            f"{key_hint} max_pages={page_cap} "
-            f"last_fetch={config.last_fetch_error() or 'n/a'}"
+
+    per_source = []
+    for src in sources:
+        st = mongo_stats.get(src, {})
+        per_source.append(f"{src}: mongo_saved={int(st.get('saved') or 0)}")
+
+    if config.MONGO_ENABLED and saved_total == 0 and processed > 0:
+        stages = {
+            src: str(mongo_stats.get(src, {}).get("stage") or "") for src in sources
+        }
+        return (
+            f"WARN: processed={processed} failed={failed} mongo_inserted=0 "
+            f"stages={stages} | mongo={ingestion.redact_mongo_uri(uri)}"
         )
-        return f"WARNING: {source_name} - No items processed ({hint})"
 
-    if stage == "mongo_connection_failed":
-        return f"ERROR: {source_name} - Mongo connection failed"
-
-    if config.MONGO_ENABLED and saved == 0 and processed > 0:
-        if stage in ("all_duplicates",):
-            return (
-                f"OK: {source_name} - processed={processed}, "
-                f"mongo_inserted=0 (all duplicates)"
-            )
-        if stage not in ("mongo_disabled", "empty_df"):
-            return (
-                f"WARN: {source_name} - processed={processed}, "
-                f"failed={failed}, mongo_inserted=0 stage={stage}"
-            )
-
-    key_suffix = (
-        f", proxy_key_index={proxy_key_index}" if proxy_key_index is not None else ""
-    )
     return (
-        f"SUCCESS: {source_name} - processed={processed}, failed={failed}, "
-        f"mongo_inserted={saved}, stage={stage}{key_suffix} | "
-        f"mongo={ingestion.redact_mongo_uri(uri)}"
+        f"SUCCESS: processed={processed} failed={failed} "
+        f"mongo_inserted={saved_total} | "
+        f"mongo={ingestion.redact_mongo_uri(uri)} | "
+        + "; ".join(per_source)
     )
