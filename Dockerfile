@@ -33,6 +33,9 @@ RUN curl https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SP
 COPY requirements/requirements.txt .
 RUN pip3 install -r requirements.txt
 
+# Playwright Chromium for Buyee AWS WAF cookie harvest (Spark workers)
+RUN playwright install --with-deps chromium
+
 # Setup Spark related environment variables
 ENV PATH="/opt/spark/sbin:/opt/spark/bin:${PATH}"
 ENV SPARK_MASTER="spark://spark-master:7077"

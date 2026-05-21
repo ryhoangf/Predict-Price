@@ -5,11 +5,15 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config as config
-from scrapers.detail_parallel import map_urls_parallel
+from scrapers.scrape_pipeline import run_two_phase_scrape
 from scrapers.listing_df_cleanup import prepare_listing_dataframe
 import pandas as pd
-import random, time
+import time
 from bs4 import BeautifulSoup
+
+
+def _listing_worker():
+    return config.listing_worker_proxy()
 
 
 def _mercari_condition_from_soup(soup: BeautifulSoup):
@@ -54,12 +58,17 @@ def _mercari_explanation_from_soup(item_url: str, soup: BeautifulSoup):
             if iframe_src.startswith("/")
             else iframe_src
         )
-        iframe_resp = config.fetch(iframe_url, config.buyee_bare_headers_like_iwr())
+        wp = config.get_thread_worker_proxy()
+        iframe_resp = config.fetch(
+            iframe_url, config.buyee_bare_headers_like_iwr(), worker_proxy=wp
+        )
         if not iframe_resp or config.response_looks_like_buyee_waf_challenge(
             iframe_resp
         ):
             iframe_resp = config.fetch(
-                iframe_url, config.buyee_page_headers(referer=item_url)
+                iframe_url,
+                config.buyee_page_headers(referer=item_url),
+                worker_proxy=wp,
             )
         if not iframe_resp or config.response_looks_like_buyee_waf_challenge(
             iframe_resp
@@ -87,7 +96,6 @@ def _mercari_explanation_from_soup(item_url: str, soup: BeautifulSoup):
 
 
 def fetch_mercari_item_detail(url: str):
-    """Một GET trang item → (condition, explanation)."""
     if not url:
         return (None, None)
     try:
@@ -95,9 +103,7 @@ def fetch_mercari_item_detail(url: str):
         if "lang=en" not in u:
             u += "&lang=en" if "?" in u else "?lang=en"
         hdr = config.buyee_page_headers(referer=config.REFERERS["mercari"])
-        resp = config.fetch(u, hdr)
-        if not resp or config.response_looks_like_buyee_waf_challenge(resp):
-            resp = config.fetch(u, config.buyee_bare_headers_like_iwr())
+        resp = config.fetch(u, hdr, worker_proxy=config.get_thread_worker_proxy())
         if not resp or config.response_looks_like_buyee_waf_challenge(resp):
             return (None, None)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -109,9 +115,10 @@ def fetch_mercari_item_detail(url: str):
         return (None, None)
 
 
-def scrape_mercari(end_page: int) -> pd.DataFrame:
+def _scrape_mercari_listing(end_page: int) -> pd.DataFrame:
     headers = config.buyee_page_headers(referer=config.REFERERS["mercari"])
     links, names, prices = [], [], []
+    wp = _listing_worker()
 
     for page in range(1, end_page + 1):
         iframe_url = (
@@ -123,7 +130,7 @@ def scrape_mercari(end_page: int) -> pd.DataFrame:
         )
         print(f"→ [Mercari] Fetching page {page}/{end_page}")
         try:
-            resp = config.fetch(iframe_url, headers)
+            resp = config.fetch(iframe_url, headers, worker_proxy=wp)
             if not resp:
                 print("   [!] skip")
                 continue
@@ -147,47 +154,18 @@ def scrape_mercari(end_page: int) -> pd.DataFrame:
             print("   [!] page error, skip")
             continue
 
-        time.sleep(random.uniform(*config.DELAY))
+        time.sleep(config.LISTING_DELAY_SEC)
 
     df = pd.DataFrame({"link": links, "name": names, "price": prices})
-    df = prepare_listing_dataframe(df, "Mercari")
-    if df.empty:
-        print("   [!] Mercari: no rows with valid link after cleanup")
-        return df
+    return prepare_listing_dataframe(df, "Mercari")
 
-    print(
-        f"   → Fetching details for {len(df)} items "
-        f"(parallel workers={config.DETAIL_FETCH_MAX_WORKERS})..."
+
+def scrape_mercari(end_page: int) -> pd.DataFrame:
+    return run_two_phase_scrape(
+        "mercari",
+        lambda: _scrape_mercari_listing(end_page),
+        fetch_mercari_item_detail,
     )
-    try:
-
-        def _one(u):
-            return config.safe_fetch_with_retry(
-                fetch_mercari_item_detail,
-                u,
-                max_retries=2,
-                invalidate_proxy_on_retry=True,
-            )
-
-        t_detail = time.perf_counter()
-        urls = df["link"].tolist()
-        pairs = map_urls_parallel(urls, _one, config.DETAIL_FETCH_MAX_WORKERS)
-        print(
-            f"   [Mercari] [timing] detail_fetch={time.perf_counter() - t_detail:.1f}s"
-        )
-        df["condition"] = [
-            (p[0] if isinstance(p, (tuple, list)) and len(p) >= 1 else None)
-            for p in pairs
-        ]
-        df["explanation"] = [
-            (p[1] if isinstance(p, (tuple, list)) and len(p) >= 2 else None)
-            for p in pairs
-        ]
-    except Exception:
-        df["condition"] = None
-        df["explanation"] = None
-
-    return df
 
 
 def get_item_condition_mercari(url: str) -> str:
@@ -198,3 +176,4 @@ def get_item_condition_mercari(url: str) -> str:
 def get_item_explanation_mercari(url: str) -> str:
     _, e = fetch_mercari_item_detail(url)
     return e
+

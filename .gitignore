@@ -84,3 +84,6 @@ test/
 # --- Model ML nặng (GitHub ~100MB/file; deploy artifact riêng) ---
 spark_apps/predictprice/models/*.pkl
 *.pkl
+
+buyee.jp/
+spark_apps/predictprice/proxy_keys.txt

@@ -5,17 +5,22 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config as config
-from scrapers.detail_parallel import map_urls_parallel
+from scrapers.scrape_pipeline import run_two_phase_scrape
 from scrapers.listing_df_cleanup import prepare_listing_dataframe
 import pandas as pd
-import random, time
+import time
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
 
-def scrape_yahooauction(end_page: int) -> pd.DataFrame:
+def _listing_worker():
+    return config.listing_worker_proxy()
+
+
+def _scrape_yahooauction_listing(end_page: int) -> pd.DataFrame:
     headers = config.buyee_page_headers(referer=config.REFERERS["yahoo"])
     all_items = []
+    wp = _listing_worker()
 
     for page in range(1, end_page + 1):
         url = (
@@ -24,7 +29,7 @@ def scrape_yahooauction(end_page: int) -> pd.DataFrame:
         )
         print(f"→ [YahooAuction] Fetching page {page}/{end_page}")
         try:
-            resp = config.fetch(url, headers)
+            resp = config.fetch(url, headers, worker_proxy=wp)
             if not resp:
                 print("   [!] no response, skip")
                 continue
@@ -57,46 +62,20 @@ def scrape_yahooauction(end_page: int) -> pd.DataFrame:
             print("   [!] page error, skip")
             continue
 
-        time.sleep(random.uniform(*config.DELAY))
+        time.sleep(config.LISTING_DELAY_SEC)
 
     df = pd.DataFrame(all_items)
-    df = prepare_listing_dataframe(df, "YahooAuction")
-    if df.empty:
-        print("   ❌ No valid items found")
-        return df
+    return prepare_listing_dataframe(df, "YahooAuction")
 
-    print(
-        f"\n   → Fetching details for {len(df)} items "
-        f"(parallel workers={config.DETAIL_FETCH_MAX_WORKERS})..."
+
+def scrape_yahooauction(end_page: int) -> pd.DataFrame:
+    df = run_two_phase_scrape(
+        "yahooauction",
+        lambda: _scrape_yahooauction_listing(end_page),
+        get_item_details_yahooauction,
     )
-    try:
-
-        def _one(u):
-            return config.safe_fetch_with_retry(
-                get_item_details_yahooauction,
-                u,
-                max_retries=2,
-                invalidate_proxy_on_retry=True,
-            )
-
-        t_detail = time.perf_counter()
-        details = map_urls_parallel(
-            df["link"].tolist(), _one, config.DETAIL_FETCH_MAX_WORKERS
-        )
-        print(
-            f"   [YahooAuction] [timing] detail_fetch="
-            f"{time.perf_counter() - t_detail:.1f}s"
-        )
-        df["condition"] = [
-            x[0] if isinstance(x, tuple) and len(x) >= 2 else None for x in details
-        ]
-        df["explanation"] = [
-            x[1] if isinstance(x, tuple) and len(x) >= 2 else None for x in details
-        ]
-    except Exception:
-        df["condition"] = None
-        df["explanation"] = None
-
+    if df is None or df.empty:
+        print("   ❌ No valid items found")
     return df
 
 
@@ -177,115 +156,97 @@ def get_item_details_yahooauction(url: str):
         if "lang=en" not in url:
             url += "&lang=en" if "?" in url else "?lang=en"
 
-        with config.create_buyee_session() as session:
-            if hasattr(session, "trust_env"):
-                session.trust_env = False
-            # Trang item: thử header đầy đủ rồi bare (giống luồng đã ổn trên debug).
-            headers = config.buyee_page_headers(referer=config.REFERERS["yahoo"])
-            resp = config.fetch_with_session(session, url, headers)
-            if not resp or config.response_looks_like_buyee_waf_challenge(resp):
-                resp = config.fetch_with_session(
-                    session, url, config.buyee_bare_headers_like_iwr()
-                )
-            if not resp or config.response_looks_like_buyee_waf_challenge(resp):
-                return None
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            condition = None
-            explanation = None
-
-            for li in soup.find_all("li", class_="itemDetail__list"):
-                try:
-                    name_div = li.find("div", class_="itemDetail__listName")
-                    if name_div and config.looks_like_buyee_condition_label(
-                        _yahoo_list_name_text(name_div)
-                    ):
-                        val_div = li.find("div", class_="itemDetail__listValue")
-                        if val_div:
-                            condition = val_div.get_text(strip=True)
-                            break
-                except Exception:
-                    continue
-
-            desc_section = soup.find(
-                "section", id="itemDescription"
-            ) or soup.find("section", class_="itemDescription")
-
-            if desc_section:
-                try:
-                    iframe = desc_section.find("iframe")
-                    if iframe:
-                        iframe_src = iframe.get("data-src") or iframe.get("src", "")
-                        iframe_src = str(iframe_src).split("#")[0].strip()
-                        if iframe_src:
-                            iframe_url = urljoin("https://buyee.jp", iframe_src)
-                            # GET .../detail — bare trước (khớt debug A0), rồi Referer + retry proxy.
-                            iframe_resp = config.fetch_with_session(
-                                session,
-                                iframe_url,
-                                config.buyee_bare_headers_like_iwr(),
-                            )
-                            if (
-                                not iframe_resp
-                                or config.response_looks_like_buyee_waf_challenge(
-                                    iframe_resp
-                                )
-                            ):
-                                iframe_headers = config.buyee_page_headers(referer=url)
-                                for attempt in range(2):
-                                    iframe_resp = config.fetch_with_session(
-                                        session, iframe_url, iframe_headers
-                                    )
-                                    if (
-                                        iframe_resp
-                                        and not config.response_looks_like_buyee_waf_challenge(
-                                            iframe_resp
-                                        )
-                                    ):
-                                        break
-                                    iframe_resp = None
-                                    if attempt == 0 and config.PROXY_XOAY_KEY:
-                                        config.invalidate_rotating_proxy()
-                            if not iframe_resp:
-                                iframe_resp = config.fetch_with_session(
-                                    session,
-                                    iframe_url,
-                                    config.buyee_bare_headers_like_iwr(),
-                                )
-                            if iframe_resp:
-                                iframe_soup = BeautifulSoup(
-                                    iframe_resp.text, "html.parser"
-                                )
-                                p_desc = iframe_soup.select_one(
-                                    "p.m-itemDetail__content"
-                                )
-                                if p_desc:
-                                    explanation = _clean_multiline_text(
-                                        p_desc.get_text(separator="\n", strip=True)
-                                    )
-                                if not explanation:
-                                    body = iframe_soup.find("body")
-                                    if body:
-                                        for tag in body.find_all(
-                                            ["script", "style", "noscript"]
-                                        ):
-                                            try:
-                                                tag.decompose()
-                                            except Exception:
-                                                pass
-                                    raw_text = (
-                                        body.get_text(separator="\n", strip=True)
-                                        if body
-                                        else iframe_soup.get_text(
-                                            separator="\n", strip=True
-                                        )
-                                    )
-                                    explanation = _clean_multiline_text(raw_text)
-                except Exception:
-                    pass
-
-            if condition or explanation:
-                return (condition, explanation)
+        wp = config.get_thread_worker_proxy()
+        headers = config.buyee_page_headers(referer=config.REFERERS["yahoo"])
+        resp = config.fetch(url, headers, worker_proxy=wp)
+        if not resp or config.response_looks_like_buyee_waf_challenge(resp):
+            resp = config.fetch(
+                url,
+                config.buyee_bare_headers_like_iwr(),
+                worker_proxy=wp,
+            )
+        if not resp or config.response_looks_like_buyee_waf_challenge(resp):
             return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        condition = None
+        explanation = None
+
+        for li in soup.find_all("li", class_="itemDetail__list"):
+            try:
+                name_div = li.find("div", class_="itemDetail__listName")
+                if name_div and config.looks_like_buyee_condition_label(
+                    _yahoo_list_name_text(name_div)
+                ):
+                    val_div = li.find("div", class_="itemDetail__listValue")
+                    if val_div:
+                        condition = val_div.get_text(strip=True)
+                        break
+            except Exception:
+                continue
+
+        desc_section = soup.find(
+            "section", id="itemDescription"
+        ) or soup.find("section", class_="itemDescription")
+
+        if desc_section:
+            try:
+                iframe = desc_section.find("iframe")
+                if iframe:
+                    iframe_src = iframe.get("data-src") or iframe.get("src", "")
+                    iframe_src = str(iframe_src).split("#")[0].strip()
+                    if iframe_src:
+                        iframe_url = urljoin("https://buyee.jp", iframe_src)
+                        iframe_resp = config.fetch(
+                            iframe_url,
+                            config.buyee_bare_headers_like_iwr(),
+                            worker_proxy=wp,
+                        )
+                        if (
+                            not iframe_resp
+                            or config.response_looks_like_buyee_waf_challenge(
+                                iframe_resp
+                            )
+                        ):
+                            iframe_resp = config.fetch(
+                                iframe_url,
+                                config.buyee_page_headers(referer=url),
+                                worker_proxy=wp,
+                            )
+                        if iframe_resp:
+                            iframe_soup = BeautifulSoup(
+                                iframe_resp.text, "html.parser"
+                            )
+                            p_desc = iframe_soup.select_one(
+                                "p.m-itemDetail__content"
+                            )
+                            if p_desc:
+                                explanation = _clean_multiline_text(
+                                    p_desc.get_text(separator="\n", strip=True)
+                                )
+                            if not explanation:
+                                body = iframe_soup.find("body")
+                                if body:
+                                    for tag in body.find_all(
+                                        ["script", "style", "noscript"]
+                                    ):
+                                        try:
+                                            tag.decompose()
+                                        except Exception:
+                                            pass
+                                raw_text = (
+                                    body.get_text(separator="\n", strip=True)
+                                    if body
+                                    else iframe_soup.get_text(
+                                        separator="\n", strip=True
+                                    )
+                                )
+                                explanation = _clean_multiline_text(raw_text)
+            except Exception:
+                pass
+
+        if condition or explanation:
+            return (condition, explanation)
+        return None
     except Exception:
         return None

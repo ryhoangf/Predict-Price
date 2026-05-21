@@ -6,6 +6,8 @@ numpy
 requests
 # Buyee WAF: TLS giống Chrome (predictprice dùng curl_cffi khi import được)
 curl-cffi>=0.7.0
+# Buyee WAF: harvest aws-waf-token qua headless Chromium (buyee_http/waf_solver.py)
+playwright>=1.40.0
 bs4
 docker
 sqlalchemy

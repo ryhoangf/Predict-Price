@@ -265,20 +265,22 @@ def process_source_on_worker(source_name):
         return n
 
     print(f"--- [Worker] Bắt đầu xử lý nguồn: {source_name} ---")
+    cfg.ensure_buyee_http_pool()
     print(
-        f"[{source_name}] Buyee HTTP: PROXY_XOAY_KEY="
-        f"{'set' if bool(cfg.PROXY_XOAY_KEY) else 'MISSING'} | "
+        f"[{source_name}] Buyee HTTP: proxy_keys={len(cfg.PROXY_XOAY_KEYS)} "
+        f"detail_workers={cfg.DETAIL_FETCH_MAX_WORKERS} | "
         f"curl_cffi={cfg.prefer_curl_cffi_for_buyee()} | "
-        f"impersonate={cfg.BUYEE_CURL_IMPERSONATE}"
+        f"impersonate={cfg.BUYEE_CURL_IMPERSONATE} | "
+        f"waf_warmup={cfg.buyee_settings.BUYEE_WAF_WARMUP}"
     )
-    if not cfg.PROXY_XOAY_KEY:
+    if not cfg.PROXY_XOAY_KEYS and cfg.USE_PROXY:
         print(
-            f"[{source_name}] CẢNH BÁO: không có PROXY_XOAY_KEY — detail/iframe dễ WAF từ IP worker. "
-            f"Đặt key giống predictprice/.env khi chạy Spark."
+            f"[{source_name}] CẢNH BÁO: không có proxy keys — "
+            f"đặt PROXY_KEYS_FILE hoặc PROXY_XOAY_KEYS hoặc PROXY_XOAY_KEY."
         )
     if not cfg.prefer_curl_cffi_for_buyee():
         print(
-            f"[{source_name}] CẢNH BÁO: không dùng curl-cffi (chưa cài hoặc BUYEE_HTTP_CLIENT=requests) — Buyee hay 202 WAF."
+            f"[{source_name}] CẢNH BÁO: không dùng curl-cffi — Buyee hay 202 WAF."
         )
 
     df = pd.DataFrame()
