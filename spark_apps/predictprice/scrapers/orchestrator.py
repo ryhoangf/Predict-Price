@@ -152,12 +152,14 @@ def run_pipeline(
         stop_event.set()
 
     mongo_stats: dict[str, dict] = {}
+    saved_by_source: dict[str, int] = {}
     for src, writer in mongo_writers.items():
         mongo_stats[src] = writer.flush()
+        saved_by_source[src] = writer.total_saved
 
     processed = sum(w.processed for w in workers)
     failed = sum(w.failed for w in workers)
-    saved_total = sum(int(s.get("saved") or 0) for s in mongo_stats.values())
+    saved_total = sum(saved_by_source.values())
 
     if processed == 0 and not no_lister:
         return (
@@ -168,8 +170,7 @@ def run_pipeline(
 
     per_source = []
     for src in sources:
-        st = mongo_stats.get(src, {})
-        per_source.append(f"{src}: mongo_saved={int(st.get('saved') or 0)}")
+        per_source.append(f"{src}: mongo_saved={saved_by_source.get(src, 0)}")
 
     if config.MONGO_ENABLED and saved_total == 0 and processed > 0:
         stages = {
