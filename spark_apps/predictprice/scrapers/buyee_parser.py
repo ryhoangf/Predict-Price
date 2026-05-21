@@ -156,9 +156,38 @@ def _parse_rakuma(soup: BeautifulSoup, pid: str) -> dict:
     }
 
 
+def _yahoo_auction_price(soup: BeautifulSoup) -> str:
+    """Prefer Buyout Price; fall back to Current Price from dl.current_price."""
+    buyout = current = ""
+    for dl in soup.select("dl.current_price"):
+        for dt in dl.find_all("dt", recursive=False):
+            label = _text(dt).lower()
+            dd = dt.find_next_sibling("dd")
+            if dd is None:
+                continue
+            price_el = dd.select_one(".price-tax") or dd.select_one(".price")
+            raw = _text(price_el) if price_el else _text(dd)
+            m = re.search(r"[\d,]+\s*YEN", raw)
+            if not m:
+                continue
+            val = m.group(0)
+            if "buyout" in label:
+                buyout = val
+            elif "current" in label:
+                current = val
+    if buyout or current:
+        return buyout or current
+    legacy = soup.select_one(".current_price .price")
+    if legacy:
+        m = re.search(r"[\d,]+\s*YEN", _text(legacy))
+        if m:
+            return m.group(0)
+    return ""
+
+
 def _parse_jdirectitems(soup: BeautifulSoup, pid: str) -> dict:
     name = _text(soup.select_one("h1.itemInformation__itemName"))
-    price = _text(soup.select_one(".current_price .price"))
+    price = _yahoo_auction_price(soup)
 
     # Seller block
     seller_name = ""
