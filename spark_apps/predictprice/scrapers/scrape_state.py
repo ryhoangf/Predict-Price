@@ -10,9 +10,29 @@ from pathlib import Path
 import pandas as pd
 
 _lock = threading.Lock()
-_STATE_ROOT = Path(
-    os.getenv("SCRAPE_STATE_DIR", str(Path(__file__).resolve().parent.parent / "data" / "scrape_state"))
-)
+
+
+def _default_state_root() -> Path:
+    """
+    Thư mục state phải nằm trên filesystem thật.
+    Khi scrapers chạy từ scrapers.zip (Spark --py-files), __file__ trỏ vào
+    .../scrapers.zip/... → mkdir sẽ lỗi [Errno 20] Not a directory.
+    """
+    explicit = os.getenv("SCRAPE_STATE_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    if os.path.isdir("/opt/spark/apps/predictprice"):
+        return Path("/opt/spark/apps/predictprice/data/scrape_state")
+    f = Path(__file__)
+    if ".zip" not in str(f).replace("\\", "/").lower():
+        try:
+            return f.resolve().parent.parent / "data" / "scrape_state"
+        except OSError:
+            pass
+    return Path("/tmp/predictprice_scrape_state")
+
+
+_STATE_ROOT = _default_state_root()
 
 
 def _source_dir(source: str) -> Path:
