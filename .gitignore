@@ -87,3 +87,6 @@ spark_apps/predictprice/models/*.pkl
 
 buyee.jp/
 spark_apps/predictprice/proxy_keys.txt
+
+spark_apps/predictprice/data/
+spark_apps/predictprice/debug_*.html
