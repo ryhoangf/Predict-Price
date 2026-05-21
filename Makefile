@@ -33,3 +33,7 @@ pack-zips:
 
 submitmain:
 	docker exec da-spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --py-files /opt/spark/apps/predictprice/scrapers.zip,/opt/spark/apps/predictprice/config.py,/opt/spark/apps/predictprice/ingestion.py /opt/spark/apps/predictprice/main.py
+
+scrape:
+	docker exec da-spark-master bash -c \
+		'cd /opt/spark/apps/predictprice && python -m scrapers.run --session new'
