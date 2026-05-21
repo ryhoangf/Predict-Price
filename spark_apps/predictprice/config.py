@@ -88,7 +88,7 @@ PROXY_XOAY_KEY = os.getenv("PROXY_XOAY_KEY", "").strip()
 PROXY_XOAY_KEYS: list[str] = load_keys()
 PROXY_KEYS_FILE = buyee_settings.PROXY_KEYS_FILE
 USE_PROXY = buyee_settings.USE_PROXY
-PROXY_XOAY_API_URL = buyee_settings.PROXY_API_URL
+PROXY_XOAY_API_URL = buyee_settings.PROXY_XOAY_API_BASE
 PROXY_XOAY_NHAMANG = buyee_settings.PROXY_XOAY_NHAMANG
 PROXY_XOAY_TINHTHANH = buyee_settings.PROXY_XOAY_TINHTHANH
 PROXY_XOAY_WHITELIST = buyee_settings.PROXY_XOAY_WHITELIST
@@ -102,6 +102,7 @@ DETAIL_FETCH_MAX_WORKERS = min(_raw_detail_workers, _keys_n) if _keys_n else _ra
 _assignments: ProxyAssignments | None = None
 _assignments_lock = threading.Lock()
 _pool_ready = False
+_last_fetch_error: str | None = None
 
 
 class BuyeeHttpResponse:
@@ -132,7 +133,11 @@ def init_buyee_http_pool(warm_waf: bool | None = None) -> int:
         return 0
     keys = load_keys()
     if not keys:
-        print("[buyee_http] WARNING: no proxy keys — direct fetch (WAF likely)")
+        print(
+            "[buyee_http] ERROR: USE_PROXY=1 nhưng không có proxy key. "
+            f"PROXY_KEYS_FILE={buyee_settings.PROXY_KEYS_FILE} "
+            f"(exists={buyee_settings.PROXY_KEYS_FILE.is_file()})"
+        )
         _pool_ready = True
         return 0
     with _assignments_lock:
@@ -140,6 +145,11 @@ def init_buyee_http_pool(warm_waf: bool | None = None) -> int:
             return len(_assignments.workers)
         _assignments = ProxyAssignments(keys)
         ok = _assignments.warm_up_all()
+        if ok == 0:
+            print(
+                "[buyee_http] ERROR: proxy API không cấp proxy cho key nào — "
+                "kiểm tra proxy_keys.txt / PROXY_XOAY_API_URL / quota provider."
+            )
         do_waf = buyee_settings.BUYEE_WAF_WARMUP if warm_waf is None else warm_waf
         if do_waf:
             n_detail = min(DETAIL_FETCH_MAX_WORKERS, len(_assignments))
@@ -236,16 +246,24 @@ def fetch(
     Buyee.jp-style fetch: per-thread WorkerProxy + WAF cookies + curl_cffi retry.
     Returns BuyeeHttpResponse(status_code, text) or None on failure.
     """
+    global _last_fetch_error
     del timeout_proxy, timeout_direct  # buyee_http uses REQUEST_TIMEOUT from settings
     ensure_buyee_http_pool()
     wp = _resolve_worker_proxy(worker_proxy)
     try:
         status, text = _buyee_fetch_response(url, wp, extra_headers=headers)
+        _last_fetch_error = None
         return BuyeeHttpResponse(status, text)
-    except FetchError:
+    except FetchError as exc:
+        _last_fetch_error = str(exc)
         return None
-    except Exception:
+    except Exception as exc:
+        _last_fetch_error = f"{type(exc).__name__}: {exc}"
         return None
+
+
+def last_fetch_error() -> str | None:
+    return _last_fetch_error
 
 
 def fetch_with_session(

@@ -441,7 +441,13 @@ def process_source_on_worker(source_name):
                 f"[{source_name}] [timing] SUMMARY scrape={scrape_s:.1f}s "
                 f"(no rows, pipeline={time.perf_counter() - t_pipeline:.1f}s)"
             )
-            return f"WARNING: {source_name} - No items found"
+            keys_path = cfg.PROXY_KEYS_FILE
+            hint = (
+                f"keys={len(cfg.PROXY_XOAY_KEYS)} "
+                f"keys_file={keys_path} exists={keys_path.is_file()} | "
+                f"last_fetch={cfg.last_fetch_error() or 'n/a'}"
+            )
+            return f"WARNING: {source_name} - No items found ({hint})"
 
     except Exception as e:
         import traceback

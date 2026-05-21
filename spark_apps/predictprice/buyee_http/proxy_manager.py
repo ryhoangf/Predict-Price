@@ -18,6 +18,18 @@ from buyee_http.waf_solver import WafBundle, solve_via_browser
 log = logging.getLogger("proxy")
 
 
+def _proxy_api_params(api_key: str) -> dict:
+    p = {
+        "key": api_key,
+        "nhamang": config.PROXY_XOAY_NHAMANG,
+        "tinhthanh": config.PROXY_XOAY_TINHTHANH,
+    }
+    wl = (config.PROXY_XOAY_WHITELIST or "").strip()
+    if wl:
+        p["whitelist"] = wl
+    return p
+
+
 def load_keys(path: Path | None = None) -> list[str]:
     keys: list[str] = []
     p = path or config.PROXY_KEYS_FILE
@@ -79,9 +91,12 @@ class WorkerProxy:
         wait = self._api_throttle_sec - (time.time() - self._last_api_call)
         if wait > 0:
             time.sleep(wait)
-        url = config.PROXY_API_URL.format(key=self.api_key)
         try:
-            r = requests.get(url, timeout=15)
+            r = requests.get(
+                config.PROXY_XOAY_API_BASE,
+                params=_proxy_api_params(self.api_key),
+                timeout=15,
+            )
             self._last_api_call = time.time()
             data = r.json()
         except Exception as exc:  # noqa: BLE001

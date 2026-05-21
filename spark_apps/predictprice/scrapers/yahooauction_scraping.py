@@ -31,7 +31,8 @@ def _scrape_yahooauction_listing(end_page: int) -> pd.DataFrame:
         try:
             resp = config.fetch(url, headers, worker_proxy=wp)
             if not resp:
-                print("   [!] no response, skip")
+                err = config.last_fetch_error()
+                print(f"   [!] fetch failed page {page}{f' | {err}' if err else ''}")
                 continue
             if config.response_looks_like_buyee_waf_challenge(resp):
                 print("   [!] WAF Challenge detected. Skipping page.")

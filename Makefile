@@ -28,5 +28,9 @@ submit:
 checkdb:
 	docker exec da-spark-master python /opt/spark/apps/predictprice/check_db.py
 
+pack-zips:
+	cd spark_apps/predictprice/scrapers && zip -r ../scrapers.zip .
+	cd spark_apps/predictprice && zip -r buyee_http.zip buyee_http
+
 submitmain:
-	docker exec da-spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --py-files /opt/spark/apps/predictprice/scrapers.zip,/opt/spark/apps/predictprice/config.py,/opt/spark/apps/predictprice/ingestion.py /opt/spark/apps/predictprice/main.py
+	docker exec da-spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --py-files /opt/spark/apps/predictprice/scrapers.zip,/opt/spark/apps/predictprice/buyee_http.zip,/opt/spark/apps/predictprice/config.py,/opt/spark/apps/predictprice/ingestion.py /opt/spark/apps/predictprice/main.py

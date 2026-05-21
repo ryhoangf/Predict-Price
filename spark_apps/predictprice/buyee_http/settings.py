@@ -23,8 +23,14 @@ PROXY_KEYS_FILE = Path(
 
 USE_PROXY: bool = os.getenv("USE_PROXY", "1") not in ("0", "false", "False", "")
 
-PROXY_API_URL: str = os.getenv(
+# Base URL get.php — key/nhamang/tinhthanh gửi qua query params (khớp config.py cũ).
+PROXY_XOAY_API_BASE: str = os.getenv(
     "PROXY_XOAY_API_URL",
+    "https://proxyxoay.shop/api/get.php",
+).split("?", 1)[0].strip()
+# Giữ tên cũ cho buyee.jp-style .format(key=...) nếu ai đó vẫn dùng template đủ query.
+PROXY_API_URL: str = os.getenv(
+    "PROXY_XOAY_API_URL_TEMPLATE",
     "https://proxyxoay.shop/api/get.php?key={key}&nhamang=random&tinhthanh=0&whitelist=",
 )
 PROXY_XOAY_NHAMANG = os.getenv("PROXY_XOAY_NHAMANG", "random").strip()
