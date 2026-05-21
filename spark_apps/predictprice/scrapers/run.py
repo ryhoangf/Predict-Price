@@ -81,6 +81,7 @@ def main() -> int:
     exit_code = 0
     for src in sources:
         print(f"\n=== Pipeline: {src} ===")
+        key_idx = config.proxy_key_index_for_source(src)
         msg = run_pipeline_source(
             src,
             max_pages=max_pages,
@@ -88,6 +89,7 @@ def main() -> int:
             no_lister=args.no_lister,
             worker_count=worker_count,
             warm_waf=not args.skip_waf_warmup,
+            proxy_key_index=key_idx,
         )
         print(msg)
         if msg.startswith("ERROR"):

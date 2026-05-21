@@ -235,27 +235,30 @@ sys.path.append('/opt/spark/apps/predictprice')
 
 from pyspark import SparkContext, SparkConf
 
-def process_source_on_worker(source_name):
+def process_source_task(task):
     """
-    Hàm này chạy trên Worker Node: lister (max_pages) → detail → NLP → Mongo.
+    Spark task: one source + one dedicated proxy key slot.
+    task = (source_name, proxy_key_index) e.g. ("mercari", 0).
     """
+    source_name, proxy_key_index = task
     import sys
     if '/opt/spark/apps/predictprice' not in sys.path:
         sys.path.append('/opt/spark/apps/predictprice')
     import config as cfg
     from scrapers.orchestrator import run_pipeline_source
 
-    print(f"--- [Worker] Bắt đầu pipeline: {source_name} ---")
+    print(f"--- [Worker] Bắt đầu pipeline: {source_name} (proxy key{proxy_key_index}) ---")
     print(
         f"[{source_name}] max_pages={cfg.max_pages_for_source(source_name)} "
         f"mongo={cfg.MONGO_ENABLED} csv={cfg.CSV_ENABLED} "
-        f"keys={len(cfg.PROXY_XOAY_KEYS)}"
+        f"proxy_key_index={proxy_key_index} total_keys={len(cfg.PROXY_XOAY_KEYS)}"
     )
     try:
         return run_pipeline_source(
             source_name,
             mongo_uri=cfg.WORKER_MONGO_URI,
             warm_waf=cfg.buyee_settings.BUYEE_WAF_WARMUP,
+            proxy_key_index=proxy_key_index,
         )
     except Exception as e:
         import traceback
@@ -282,15 +285,24 @@ def main():
     sc.setLogLevel("WARN")
 
     sources = ['mercari', 'rakuma', 'yahooauction']
-    
+    import config as cfg
+    tasks = []
+    for src in sources:
+        key_idx = cfg.proxy_key_index_for_source(src)
+        if key_idx is None:
+            raise ValueError(f"No proxy key mapping for source {src!r}")
+        tasks.append((src, key_idx))
+
     print("=" * 60)
-    print(f"Bắt đầu phân phối {len(sources)} nguồn dữ liệu cho Spark Cluster")
+    print(f"Bắt đầu phân phối {len(tasks)} nguồn cho Spark (1 source = 1 proxy key)")
+    for src, idx in tasks:
+        print(f"  {src} → key{idx}")
     print("=" * 60)
 
-    sources_rdd = sc.parallelize(sources, numSlices=len(sources))
-    
+    tasks_rdd = sc.parallelize(tasks, numSlices=len(tasks))
+
     try:
-        results = sources_rdd.map(process_source_on_worker).collect()
+        results = tasks_rdd.map(process_source_task).collect()
 
         print("\n" + "=" * 60)
         print("KẾT QUẢ TỪ CÁC WORKER:")

@@ -185,6 +185,18 @@ SOURCE_TO_PLATFORM: dict[str, str] = {
 }
 PLATFORM_TO_SOURCE: dict[str, str] = {v: k for k, v in SOURCE_TO_PLATFORM.items()}
 
+# Spark: 1 source = 1 proxy key (mercari→key0, rakuma→key1, yahoo→key2).
+SOURCE_PROXY_KEY_INDEX: dict[str, int] = {
+    "mercari": 0,
+    "rakuma": 1,
+    "yahooauction": 2,
+}
+
+
+def proxy_key_index_for_source(source: str) -> int | None:
+    """Fixed key slot for Spark parallel tasks; None if source unmapped."""
+    return SOURCE_PROXY_KEY_INDEX.get(source)
+
 
 def max_pages_for_source(source: str) -> int:
     return {

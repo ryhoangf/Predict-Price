@@ -22,6 +22,51 @@ def _cap_workers(requested: int, assignments: ProxyAssignments | None) -> int:
     return n
 
 
+def _init_proxy_assignments(
+    source_name: str,
+    proxy_key_index: int | None,
+    warm_waf: bool,
+) -> tuple[ProxyAssignments | None, str | None]:
+    """Warm proxy (+ optional WAF) for full pool or a single key slot."""
+    if not config.USE_PROXY:
+        return None, None
+
+    keys = load_keys()
+    if not keys:
+        return (
+            None,
+            f"ERROR: {source_name} - no proxy keys "
+            f"(PROXY_KEYS_FILE={config.PROXY_KEYS_FILE})",
+        )
+
+    slot_label = "all"
+    if proxy_key_index is not None:
+        if proxy_key_index < 0 or proxy_key_index >= len(keys):
+            return (
+                None,
+                f"ERROR: {source_name} - proxy_key_index={proxy_key_index} "
+                f"out of range (keys={len(keys)})",
+            )
+        keys = [keys[proxy_key_index]]
+        slot_label = f"key{proxy_key_index}"
+
+    assignments = ProxyAssignments(keys)
+    ok = assignments.warm_up_all()
+    if ok == 0:
+        return None, f"ERROR: {source_name} - proxy warm-up failed ({slot_label})"
+
+    if warm_waf and config.buyee_settings.BUYEE_WAF_WARMUP:
+        assignments.warm_waf_all(len(assignments))
+
+    log.info(
+        "[%s] proxy pool ready: slot=%s workers_in_pool=%s",
+        source_name,
+        slot_label,
+        len(assignments),
+    )
+    return assignments, None
+
+
 def run_pipeline_source(
     source_name: str,
     *,
@@ -30,10 +75,14 @@ def run_pipeline_source(
     no_lister: bool = False,
     worker_count: int | None = None,
     warm_waf: bool = True,
+    proxy_key_index: int | None = None,
 ) -> str:
     """
     Scrape one source: list (max_pages) → detail workers → NLP → Mongo.
     Returns status string for Spark driver (SUCCESS/WARNING/ERROR).
+
+    proxy_key_index: when set (Spark mode), warm/use only keys[index] and
+    default to 1 detail worker sharing that slot with the lister.
     """
     if source_name not in config.SOURCE_TO_PLATFORM:
         return f"ERROR: {source_name} - Unknown source"
@@ -48,28 +97,23 @@ def run_pipeline_source(
         format="%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s",
     )
 
-    config.ensure_buyee_http_pool(warm_waf=warm_waf)
+    # Dedicated key per Spark task — do not init global pool with all keys.
+    if proxy_key_index is None:
+        config.ensure_buyee_http_pool(warm_waf=warm_waf)
 
-    assignments: ProxyAssignments | None = None
-    if config.USE_PROXY:
-        keys = load_keys()
-        if not keys:
-            return (
-                f"ERROR: {source_name} - no proxy keys "
-                f"(PROXY_KEYS_FILE={config.PROXY_KEYS_FILE})"
-            )
-        assignments = ProxyAssignments(keys)
-        ok = assignments.warm_up_all()
-        if ok == 0:
-            return f"ERROR: {source_name} - proxy warm-up failed"
-        if warm_waf and config.buyee_settings.BUYEE_WAF_WARMUP:
-            n_waf = min(config.DETAIL_FETCH_MAX_WORKERS, len(assignments))
-            assignments.warm_waf_all(n_waf)
-
-    n_workers = _cap_workers(
-        worker_count or config.PIPELINE_NUM_WORKERS,
-        assignments,
+    assignments, proxy_err = _init_proxy_assignments(
+        source_name, proxy_key_index, warm_waf
     )
+    if proxy_err:
+        return proxy_err
+
+    if proxy_key_index is not None:
+        n_workers = 1
+    else:
+        n_workers = _cap_workers(
+            worker_count or config.PIPELINE_NUM_WORKERS,
+            assignments,
+        )
     config.PIPELINE_NUM_WORKERS = n_workers
 
     if config.MONGO_ENABLED:
@@ -133,9 +177,13 @@ def run_pipeline_source(
     stage = str(stats.get("stage") or "")
 
     if processed == 0 and not no_lister:
+        key_hint = (
+            f"proxy_key_index={proxy_key_index}"
+            if proxy_key_index is not None
+            else f"keys={len(config.PROXY_XOAY_KEYS)}"
+        )
         hint = (
-            f"keys={len(config.PROXY_XOAY_KEYS)} "
-            f"max_pages={page_cap} "
+            f"{key_hint} max_pages={page_cap} "
             f"last_fetch={config.last_fetch_error() or 'n/a'}"
         )
         return f"WARNING: {source_name} - No items processed ({hint})"
@@ -155,8 +203,11 @@ def run_pipeline_source(
                 f"failed={failed}, mongo_inserted=0 stage={stage}"
             )
 
+    key_suffix = (
+        f", proxy_key_index={proxy_key_index}" if proxy_key_index is not None else ""
+    )
     return (
         f"SUCCESS: {source_name} - processed={processed}, failed={failed}, "
-        f"mongo_inserted={saved}, stage={stage} | "
+        f"mongo_inserted={saved}, stage={stage}{key_suffix} | "
         f"mongo={ingestion.redact_mongo_uri(uri)}"
     )
