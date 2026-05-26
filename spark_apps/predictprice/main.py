@@ -36,6 +36,15 @@ def process_nlp_source(source_name: str) -> str:
 
 def main():
     conf = SparkConf().setAppName("Distributed_NLP_PostIngest")
+    
+    # CẤU HÌNH ÉP TÀI NGUYÊN CHUẨN K3S (SỬA ĐOẠN NÀY)
+    conf.set("spark.executor.memory", "600m")         # Cấp 600M RAM cho mỗi Executor JVM
+    conf.set("spark.driver.memory", "512m")           # Cấp 512M RAM cho Driver chạy tại Job Pod
+    conf.set("spark.executor.memoryOverhead", "128m") # Chừa 128M Off-heap cho Python worker bên ngoài JVM
+    conf.set("spark.driver.memoryOverhead", "128m")
+    conf.set("spark.executor.cores", "1")             # Mỗi Executor chỉ ăn đúng 1 Core
+    conf.set("spark.cores.max", "3")                  # Cả Job ăn tối đa 3 Cores (tương ứng 3 nguồn song song)
+
     conf.set("spark.network.timeout", "1800s")
     conf.set("spark.executor.heartbeatInterval", "180s")
     conf.set("spark.task.maxFailures", "3")
