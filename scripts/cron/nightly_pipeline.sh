@@ -40,6 +40,8 @@ pack_scrapers_zip || exit 1
 if ! spark-submit \
     --master spark://spark-master:7077 \
     --deploy-mode client \
+    --conf spark.executor.memory=800m
+    --conf spark.driver.memory=800m
     --py-files /root/Predict-Price/spark_apps/predictprice/scrapers.zip,/root/Predict-Price/spark_apps/predictprice/config.py,/root/Predict-Price/spark_apps/predictprice/ingestion.py \
     /root/Predict-Price/spark_apps/predictprice/main.py >>"$LOG_NLP" 2>&1; then
     cron_log "ERROR: spark-submit main.py failed (see ${LOG_NLP})"
