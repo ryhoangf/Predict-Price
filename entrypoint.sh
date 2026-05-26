@@ -6,7 +6,7 @@ echo "SPARK_WORKLOAD: $SPARK_WORKLOAD"
 
 if [ "$SPARK_WORKLOAD" == "master" ]; then
   echo "Starting Spark Master in FOREGROUND..."
-  exec spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
+  exec spark-class org.apache.spark.deploy.master.Master --host 0.0.0.0 --port 7077 --webui-port 8080
 elif [[ "$SPARK_WORKLOAD" == worker* ]]; then
   echo "Starting Spark Worker in FOREGROUND..."
   exec spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
