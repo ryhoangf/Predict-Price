@@ -3,16 +3,7 @@
 
 cron_log() { echo "[$(date -Iseconds)] $*"; }
 
-require_make_docker() {
-  local c
-  for c in make docker; do
-    command -v "$c" >/dev/null 2>&1 || {
-      cron_log "ERROR: missing required command: $c"
-      return 1
-    }
-  done
-  return 0
-}
+# Đã loại bỏ require_make_docker vì không cần dùng lệnh docker nữa
 
 require_python() {
   if command -v python3 >/dev/null 2>&1; then
@@ -47,33 +38,15 @@ cron_log_dir() {
   echo "$dir"
 }
 
-ensure_docker_stack() {
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'da-spark-master'; then
-    cron_log "Docker stack OK (da-spark-master running)"
-    return 0
-  fi
-  cron_log "da-spark-master not running — starting with make run-d"
-  make run-d
-  local i
-  for i in $(seq 1 30); do
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'da-spark-master'; then
-      cron_log "Stack ready after ${i}x5s"
-      sleep 5
-      return 0
-    fi
-    sleep 5
-  done
-  cron_log "ERROR: da-spark-master did not start in time"
-  return 1
-}
+# Đã loại bỏ ensure_docker_stack vì K3s luôn giữ Spark Master sống 24/7
 
 pack_scrapers_zip() {
   local root packer
   root="$(cron_repo_root)"
   packer="${root}/spark_apps/predictprice/pack_zips.py"
   if [[ -f "$packer" ]]; then
-    cron_log "make pack-zips"
-    make pack-zips
+    cron_log "K3s-Native: Running pack_zips.py directly..."
+    run_python "$packer" # Chạy trực tiếp bằng python, không qua lệnh 'make' của docker
   elif [[ -f "${root}/spark_apps/predictprice/scrapers.zip" ]]; then
     cron_log "WARN: pack_zips.py missing — using existing scrapers.zip"
   else
@@ -82,8 +55,7 @@ pack_scrapers_zip() {
   fi
 }
 
-# Default: no delay between steps. Override via env if needed, e.g.:
-#   CRON_SLEEP_NLP_SEC=36000 CRON_SLEEP_ETL_SEC=7200
+# Cấu hình thời gian sleep
 : "${CRON_SLEEP_NLP_SEC:=0}"
 : "${CRON_SLEEP_ETL_SEC:=0}"
 
