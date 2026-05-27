@@ -36,6 +36,8 @@ def process_nlp_source(source_name: str) -> str:
 
 def main():
     conf = SparkConf().setAppName("Distributed_NLP_PostIngest")
+
+    conf.setMaster("spark://spark-master:7077")
     
     # CẤU HÌNH TÀI NGUYÊN VÀNG CHUẨN KHỚP VỚI WORKER 1.5G (ĐÃ SỬA LỖI CÚ PHÁP)
     conf.set("spark.executor.memory", "1000m")        # Sửa "1000," thành "1000m" (1GB RAM)
@@ -43,12 +45,12 @@ def main():
     conf.set("spark.executor.cores", "1")             # Mỗi Executor chỉ ăn đúng 1 Core
     conf.set("spark.cores.max", "3")                  # Toàn bộ Job ăn tối đa 3 Cores song song
 
-    conf.set("spark.network.timeout", "1800s")
-    conf.set("spark.executor.heartbeatInterval", "180s")
+    conf.set("spark.network.timeout", "1800")
+    conf.set("spark.executor.heartbeatInterval", "180")
     conf.set("spark.task.maxFailures", "3")
     conf.set("spark.speculation", "false")
-    conf.set("spark.rpc.askTimeout", "600s")
-    conf.set("spark.rpc.lookupTimeout", "600s")
+    conf.set("spark.rpc.askTimeout", "600")
+    conf.set("spark.rpc.lookupTimeout", "600")
 
     sc = SparkContext(conf=conf)
     sc.setLogLevel("WARN")
