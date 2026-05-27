@@ -28,6 +28,18 @@ def _source_for_platform(platform: str) -> str:
     return config.PLATFORM_TO_SOURCE.get(platform, platform)
 
 
+def _is_waf_soft_block(html: str) -> bool:
+    html_lower = html.lower()
+    waf_markers = (
+        "captcha",
+        "aws-waf",
+        "access denied",
+        "verify you are human",
+        "cf-chl",  # common challenge marker on some anti-bot pages
+    )
+    return any(marker in html_lower for marker in waf_markers)
+
+
 class ListerThread(threading.Thread):
     def __init__(
         self,
@@ -61,6 +73,9 @@ class ListerThread(threading.Thread):
         page = int(s[key].get("next_page", 1))
         last_page: int | None = s[key].get("last_page")
 
+        max_waf_retries = 10
+        waf_retry_count = 0
+
         log.info("Lister[%s] start at page %s (max_pages=%s)", key, page, page_cap or "all")
 
         while not self.stop_event.is_set():
@@ -91,6 +106,31 @@ class ListerThread(threading.Thread):
                 continue
 
             ids, lp = parse_search_page(html, t.platform)
+            if not ids:
+                if _is_waf_soft_block(html):
+                    waf_retry_count += 1
+                    log.warning(
+                        "Lister[%s] soft-block suspected on page %s (attempt %s/%s)",
+                        key,
+                        page,
+                        waf_retry_count,
+                        max_waf_retries,
+                    )
+                    if self.worker_proxy:
+                        self.worker_proxy.refresh_waf(force=True)
+                    if waf_retry_count > max_waf_retries:
+                        log.error(
+                            "Lister[%s] exceeded soft-block retries on page %s; stopping target",
+                            key,
+                            page,
+                        )
+                        break
+                    if self.stop_event.wait(10):
+                        return
+                    continue
+                log.info("Lister[%s] no items on page %s — assuming end.", key, page)
+                break
+            waf_retry_count = 0
             if lp and (last_page is None or lp > last_page):
                 last_page = lp
 
@@ -114,10 +154,6 @@ class ListerThread(threading.Thread):
             next_page = page if not ids else page + 1
             s[key] = {"next_page": next_page, "last_page": last_page}
             pipeline_state.save_lister_state(source_name, s)
-
-            if not ids:
-                log.info("Lister[%s] no items on page %s — assuming end.", key, page)
-                break
 
             if page_cap and page >= page_cap:
                 log.info("Lister[%s] finished max_pages=%s", key, page_cap)
