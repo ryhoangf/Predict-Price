@@ -18,9 +18,19 @@ col = client[DB_NAME][COLLECTION_NAME]
 
 result = col.update_many(
     {"status": {"$in": ["loaded_mysql", "dropped_etl"]}},
-    {"$set": {"status": "extracted_layer2"}}
+    {
+        "$set": {
+            "status": "extracted_layer2",
+            "processed": False,
+            "nlp_done": True,
+        },
+        "$unset": {"processed_at": ""},
+    },
 )
-print(f"Reset {result.modified_count} docs: loaded_mysql -> extracted_layer2")
+print(
+    f"Reset {result.modified_count} docs → extracted_layer2, processed=false "
+    f"(chạy reprocess_nlp_data.py --mongo-renlp trước nếu đã sửa title_nlp.py)"
+)
 
 for s in ["extracted_layer2", "loaded_mysql", "dropped_etl"]:
     print(f"  {s}: {col.count_documents({'status': s})}")

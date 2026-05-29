@@ -3,6 +3,8 @@ import re
 import unicodedata
 import json
 import os
+from typing import Any
+
 from flashtext import KeywordProcessor
 
 _DECOR_RE = re.compile(r'[★☆♪♡●◆■□◇△▲▼►◄※⚠️‼️【】]')
@@ -132,7 +134,43 @@ class PhoneInfoExtractor:
             model_line, model_number = "Redmi", match.group(1).strip()
         elif match := re.search(r'AQUOS\s*([a-zA-Z0-9\s]+?)(?:\s|　|$|SH-)', text, re.IGNORECASE):
             model_line, model_number = "AQUOS", match.group(1).strip()
-            
+        elif match := re.search(
+            r'(?i)(?:oppo\s+)?reno\s*(\d+)\s*([a-z])?\b|(?:oppo\s+)?reno(\d+)([a-z])\b',
+            text,
+        ):
+            num = match.group(1) or match.group(3)
+            letter = (match.group(2) or match.group(4) or "").upper()
+            model_line = "Reno"
+            model_number = f"{num} {letter}".strip() if letter else num
+        elif match := re.search(r'(?i)(?:oppo\s+)?find\s*([x]?\d+)\s*([a-z])?\b', text):
+            model_line = "Find"
+            suffix = (match.group(2) or "").upper()
+            model_number = f"{match.group(1)} {suffix}".strip() if suffix else match.group(1)
+        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)s\b', text):
+            model_line, model_number = "A", f"{match.group(1)}s"
+        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)([sx])\b', text):
+            model_line, model_number = "A", f"{match.group(1)}{match.group(2).upper()}"
+        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)\b', text):
+            model_line, model_number = "A", match.group(1)
+        elif match := re.search(
+            r'(?i)(?:huawei\s+)?mate\s*(\d+)\s*(pro|lite|rs)?',
+            text,
+        ):
+            suffix = (match.group(2) or "").strip()
+            model_line = "Mate"
+            model_number = f"{match.group(1)} {suffix.title()}".strip() if suffix else match.group(1)
+        elif match := re.search(
+            r'(?i)(?:huawei\s+)?p\s*(\d+)\s*(pro|lite|plus)?',
+            text,
+        ):
+            suffix = (match.group(2) or "").strip()
+            model_line = "P"
+            model_number = f"{match.group(1)} {suffix.title()}".strip() if suffix else match.group(1)
+        elif match := re.search(r'(?i)nova\s*(\d+[a-z]*)', text):
+            model_line, model_number = "nova", match.group(1).strip()
+        elif match := re.search(r'(?i)(?:huawei\s+)?enjoy\s*(\d+)', text):
+            model_line, model_number = "Enjoy", match.group(1)
+
         return model_line, model_number
 
     def extract_capacity(self, text):
@@ -181,7 +219,12 @@ class PhoneInfoExtractor:
         # 3. Suy luận Brand nếu tiêu đề bị khuyết
         brand = dict_features['brand']
         if not brand and model_line:
-            brand_inference = {'iPhone': 'Apple', 'Pixel': 'Google', 'Galaxy': 'Samsung', 'AQUOS': 'SHARP', 'Redmi': 'Xiaomi', 'Xperia': 'Sony'}
+            brand_inference = {
+                'iPhone': 'Apple', 'Pixel': 'Google', 'Galaxy': 'Samsung',
+                'AQUOS': 'SHARP', 'Redmi': 'Xiaomi', 'Xperia': 'Sony',
+                'Reno': 'OPPO', 'Find': 'OPPO', 'A': 'OPPO',
+                'Mate': 'Huawei', 'P': 'Huawei', 'nova': 'Huawei', 'Enjoy': 'Huawei',
+            }
             brand = brand_inference.get(model_line)
 
         return {
@@ -220,6 +263,107 @@ class PhoneInfoExtractor:
         for c in feat_df.columns:
             out[c] = feat_df[c].values
         return out
+
+
+# --- Catalog identity: products.name, model_series, base_specs (dùng trong etl.py) ---
+
+_VARIANT_ONLY = frozenset(
+    {"pro", "max", "lite", "plus", "ultra", "mini", "se", "fe", "neo", "prime", "rs"}
+)
+
+
+def _present(val: Any) -> bool:
+    if val is None:
+        return False
+    try:
+        if pd.isna(val):
+            return False
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, str) and not val.strip():
+        return False
+    return True
+
+
+def _variant_without_redundancy(variant: Any, model_line: Any, model_number: Any) -> str | None:
+    if not _present(variant):
+        return None
+    base_tokens = {
+        t.lower()
+        for t in f"{model_line or ''} {model_number or ''}".split()
+        if t
+    }
+    kept = [t for t in str(variant).split() if t.lower() not in base_tokens]
+    return " ".join(kept).strip() or None
+
+
+def build_standard_name(row: dict) -> str | None:
+    """Tên catalog (products.name): model + variant; brand/specs tách cột MySQL."""
+    if not _present(row.get("model_line")):
+        return None
+
+    variant = _variant_without_redundancy(
+        row.get("variant"), row.get("model_line"), row.get("model_number")
+    )
+    parts = [row.get("model_line"), row.get("model_number"), variant]
+    name = " ".join(str(p) for p in parts if _present(p)).strip()
+    if not name:
+        return None
+
+    tokens = name.lower().split()
+    if all(t in _VARIANT_ONLY for t in tokens):
+        return None
+    if len(tokens) == 1 and tokens[0] in _VARIANT_ONLY:
+        return None
+    return name
+
+
+def build_model_series(row: dict) -> str:
+    parts = [row.get("model_line"), row.get("model_number")]
+    return " ".join(str(p) for p in parts if _present(p)).strip()
+
+
+def build_base_specs(row: dict) -> str:
+    storage_val = row.get("storage") if _present(row.get("storage")) else row.get("capacity")
+    storage = (
+        str(storage_val).replace("GB", "").replace("gb", "").strip()
+        if _present(storage_val)
+        else None
+    )
+    ram = (
+        str(row.get("ram")).replace("GB", "").replace("gb", "").strip()
+        if _present(row.get("ram"))
+        else None
+    )
+    return json.dumps({"storage": storage, "ram": ram})
+
+
+def row_from_nlp_features(feats: dict, *, name_raw: str | None = None) -> dict:
+    return {
+        "brand": feats.get("brand"),
+        "model_line": feats.get("model_line"),
+        "model_number": feats.get("model_number"),
+        "variant": feats.get("variant"),
+        "capacity": feats.get("capacity"),
+        "storage": feats.get("storage"),
+        "ram": feats.get("ram"),
+        "name_raw": name_raw or feats.get("original_title"),
+    }
+
+
+def row_from_mongo_doc(doc: dict, extractor: PhoneInfoExtractor) -> dict:
+    title = doc.get("name") or doc.get("name_raw") or ""
+    feats = extractor.extract_all_info(str(title))
+    row = row_from_nlp_features(feats, name_raw=title)
+
+    if not _present(row.get("brand")) and _present(doc.get("brand")):
+        row["brand"] = doc.get("brand")
+    if _present(doc.get("storage")):
+        row["storage"] = doc.get("storage")
+    if _present(doc.get("ram")):
+        row["ram"] = doc.get("ram")
+    return row
+
 
 def main():
     # Chú ý đường dẫn file JSON cấu hình

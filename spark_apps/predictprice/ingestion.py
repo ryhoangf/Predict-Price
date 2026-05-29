@@ -34,13 +34,38 @@ def redact_mongo_uri(uri: str | None) -> str:
         return "(unparseable uri)"
 
 
+def sanitize_mongo_value(v):
+    """Chuyển NaN/NaT pandas → None để pymongo BSON encode được."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, float) and pd.isna(v):
+        return None
+    try:
+        import numpy as np
+
+        if isinstance(v, (np.floating, np.integer, np.bool_)):
+            if isinstance(v, np.floating) and np.isnan(v):
+                return None
+            return v.item()
+    except ImportError:
+        pass
+    return v
+
+
 @contextmanager
 def get_mongo_connection(custom_uri=None):
     """
-    Context manager để đảm bảo MongoDB connection được đóng
+    Context manager để đảm bảo MongoDB connection được đóng.
+    Lỗi trong khối `with` (vd. bulk_write) được re-raise — không nuốt exception.
     """
     client = None
     uri_to_use = custom_uri if custom_uri else cfg.MONGO_URI
+    col = None
     try:
         client = pymongo.MongoClient(
             uri_to_use,
@@ -57,23 +82,24 @@ def get_mongo_connection(custom_uri=None):
             f"[mongo] ping OK | URI={redact_mongo_uri(uri_to_use)} | "
             f"db={cfg.DB_NAME} | coll={cfg.COLLECTION_NAME}"
         )
-
-        db = client[cfg.DB_NAME]
-        col = db[cfg.COLLECTION_NAME]
-        yield col
-
+        col = client[cfg.DB_NAME][cfg.COLLECTION_NAME]
     except pymongo.errors.ConnectionFailure as e:
         print(
             f"[mongo] ConnectionFailure | URI={redact_mongo_uri(uri_to_use)} | "
             f"{type(e).__name__}: {e}"
         )
         yield None
+        return
     except Exception as e:
         print(
             f"[mongo] Lỗi kết nối / ping | URI={redact_mongo_uri(uri_to_use)} | "
             f"{type(e).__name__}: {e}"
         )
         yield None
+        return
+
+    try:
+        yield col
     finally:
         if client:
             client.close()
@@ -331,6 +357,7 @@ def apply_nlp_batch(
     out["rows_in_batch"] = len(df)
     now = datetime.now(timezone.utc)
     preserve = frozenset({"_id", "link", "source", "ingested_at"})
+    df = df.where(pd.notna(df), None)
 
     with get_mongo_connection(custom_mongo_uri) as col:
         if col is None:
@@ -349,7 +376,7 @@ def apply_nlp_batch(
             if not link:
                 continue
             payload = {
-                k: (None if isinstance(v, float) and pd.isna(v) else v)
+                k: sanitize_mongo_value(v)
                 for k, v in row.items()
                 if k not in preserve
             }

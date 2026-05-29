@@ -292,47 +292,31 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["brand"])
     print(f"After removing items without Brand (Junk Filter): {len(df)} ({before_brand - len(df)} dropped)")
 
-    # 4.2 Lắp ráp tên chuẩn (standard_name)
-    def build_std_name(row):
-        # Lấy dung lượng từ Title (capacity) hoặc Description (storage)
-        mem = row.get('capacity') if pd.notna(row.get('capacity')) else row.get('storage')
-        
-        parts = [
-            row.get('brand'), 
-            row.get('model_line'), 
-            row.get('model_number'), 
-            row.get('variant'), 
-            mem
-        ]
-        # Gom các phần tử có giá trị lại với nhau
-        name = " ".join([str(p) for p in parts if pd.notna(p) and p]).strip()
-        
-        # Nếu tên lắp ráp quá ngắn, lấy một phần của tên raw làm fallback
-        if len(name) < 5 and pd.notna(row.get('name_raw')):
-            return row['name_raw'][:100]
-        return name
-        
-    df['standard_name'] = df.apply(build_std_name, axis=1)
-    
-    # 4.3 Lắp ráp Model Series
-    def build_series(row):
-        parts = [row.get('model_line'), row.get('model_number')]
-        return " ".join([str(p) for p in parts if pd.notna(p) and p]).strip()
-        
-    df['model_series'] = df.apply(build_series, axis=1)
-    df['category'] = 'Smartphone'
+    from NLP.title_nlp import build_base_specs, build_model_series, build_standard_name
 
-    # 4.4 Lắp ráp Base Specs (Dưới dạng JSON)
-    def build_base_specs(row):
-        # Ưu tiên lấy 'storage' từ explanation, nếu không có thì lấy 'capacity' từ title
-        storage_val = row.get('storage') if pd.notna(row.get('storage')) else row.get('capacity')
-        
-        storage = str(storage_val).replace('GB', '').replace('gb', '').strip() if pd.notna(storage_val) else None
-        ram = str(row.get('ram')).replace('GB', '').replace('gb', '').strip() if pd.notna(row.get('ram')) else None
-        
-        return json.dumps({"storage": storage, "ram": ram})
-        
-    df['base_specs'] = df.apply(build_base_specs, axis=1)
+    # 4.2–4.4 Identity: name = model only (iPhone 12 Pro Max); brand/specs tách cột
+    def _identity_row(row):
+        return row.to_dict()
+
+    df["standard_name"] = df.apply(
+        lambda r: build_standard_name(_identity_row(r)), axis=1
+    )
+    df["model_series"] = df.apply(
+        lambda r: build_model_series(_identity_row(r)), axis=1
+    )
+    df["category"] = "Smartphone"
+    df["base_specs"] = df.apply(
+        lambda r: build_base_specs(_identity_row(r)), axis=1
+    )
+
+    before_identity = len(df)
+    df = df.dropna(subset=["standard_name"])
+    df = df[df["standard_name"].astype(str).str.strip().str.len() > 0]
+    if before_identity - len(df) > 0:
+        print(
+            f"After model identity (no model_line/number in title): "
+            f"{len(df)} ({before_identity - len(df)} dropped)"
+        )
 
     # Thống kê nhanh Base Specs
     specs_with_storage = df['base_specs'].apply(lambda x: '"storage": null' not in x).sum()
@@ -835,8 +819,8 @@ def main():
     
     if df_clean.empty:
         print("\nAll data already exists in MySQL.")
-        # Bị trùng hết -> Đánh dấu dropped hết
-        mark_dropped_in_mongo(all_incoming_urls)
+        # URL đã có listing — đánh dấu loaded_mysql, KHÔNG dropped_etl
+        update_mongo_status(all_incoming_urls)
         predict_product_prices(engine)
         return
     
