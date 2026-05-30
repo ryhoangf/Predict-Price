@@ -122,9 +122,32 @@ class PhoneInfoExtractor:
         """Regex xử lý động cho Model Line và Number"""
         model_line, model_number = None, None
         
-        if match := re.search(r'iPhone\s*(\d+|SE\d*|XR|XS|X)', text, re.IGNORECASE):
+        if match := re.search(r'iPhone\s*(\d+)\s*mini\b', text, re.IGNORECASE):
+            model_line, model_number = "iPhone", f"{match.group(1)} mini"
+        elif match := re.search(
+            r'iPhone\s*(SE\s*3|SE\s*2|SE3|SE2|SE)\b',
+            text,
+            re.IGNORECASE,
+        ):
+            raw = match.group(1).upper().replace(" ", "")
+            model_line, model_number = "iPhone", raw
+        elif match := re.search(r'iPhone\s*(\d+|XR|XS|X)\b', text, re.IGNORECASE):
             model_line, model_number = "iPhone", match.group(1)
-        elif match := re.search(r'Galaxy\s*([A-Z]*\s*\d+)', text, re.IGNORECASE):
+        elif match := re.search(
+            r'Galaxy\s*Z\s*(Flip|Fold)\s*(\d+)|Galaxy\s*Z\s*(Flip|Fold)(\d+)',
+            text,
+            re.IGNORECASE,
+        ):
+            kind = (match.group(1) or match.group(3)).title()
+            num = match.group(2) or match.group(4)
+            model_line, model_number = "Galaxy", f"Z {kind} {num}"
+        elif match := re.search(
+            r'Galaxy\s+(Note\s*\d+\s*(?:Ultra|\+)?|S\d+\s*(?:Ultra|\+|FE)?|A\s*\d+\w*|M\s*\d+)',
+            text,
+            re.IGNORECASE,
+        ):
+            model_line, model_number = "Galaxy", match.group(1).strip()
+        elif match := re.search(r'Galaxy\s*([A-Z]*\s*\d+\w*)', text, re.IGNORECASE):
             model_line, model_number = "Galaxy", match.group(1).strip()
         elif match := re.search(r'Pixel\s*(\d+[a-zA-Z]*)', text, re.IGNORECASE):
             model_line, model_number = "Pixel", match.group(1)
