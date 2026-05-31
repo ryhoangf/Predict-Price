@@ -615,9 +615,15 @@ def predict_product_prices(engine):
                     AND pf.forecast_date = CURDATE()
                 )
             """, conn)
-        products_df['model_line'] = products_df['model_series'].fillna('')
-        products_df['model_number'] = ''
-        products_df['variant'] = ''
+        from NLP.title_nlp import resolve_product_ml_identity
+
+        def _ml_identity(row):
+            ident = resolve_product_ml_identity(row.to_dict())
+            return pd.Series(ident)
+
+        products_df[["model_line", "model_number", "variant"]] = products_df.apply(
+            _ml_identity, axis=1
+        )
         
         if products_df.empty:
             print("✓ All products have today's forecast already.")

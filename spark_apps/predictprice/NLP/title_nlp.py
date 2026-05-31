@@ -1,3 +1,4 @@
+import functools
 import pandas as pd
 import re
 import unicodedata
@@ -101,21 +102,18 @@ class PhoneInfoExtractor:
         brands = self.brand_processor.extract_keywords(text)
         colors = self.color_processor.extract_keywords(text)
         variants = self.variant_processor.extract_keywords(text)
-        
-        # FlashText sẽ bắt các biến thể dài trước (VD: "Pro Max" sẽ được bắt thay vì tách rời "Pro" và "Max")
+        if variants and "Pro Max" in variants:
+            variant_str = "Pro Max"
+        elif variants:
+            variant_str = " ".join(dict.fromkeys(variants))
+        else:
+            variant_str = None
+
         extracted = {
             'brand': brands[0] if brands else None,
             'color': colors[0] if colors else None,
-            'variant': ' '.join(list(dict.fromkeys(variants))) if variants else None
+            'variant': variant_str,
         }
-        
-        # Xử lý trường hợp hiếm khi chuỗi có cả "Pro Max" và "Pro" ở 2 nơi khác nhau
-        if extracted['variant']:
-            if 'Pro Max' in extracted['variant'] and 'Pro' in extracted['variant']:
-                extracted['variant'] = extracted['variant'].replace('Pro Max', '').replace('Pro', 'Pro Max').strip()
-                # Dọn dẹp khoảng trắng thừa nếu có
-                extracted['variant'] = re.sub(r'\s+', ' ', extracted['variant']).strip()
-                
         return extracted
 
     def extract_model_info(self, text):
@@ -344,6 +342,39 @@ def build_standard_name(row: dict) -> str | None:
 def build_model_series(row: dict) -> str:
     parts = [row.get("model_line"), row.get("model_number")]
     return " ".join(str(p) for p in parts if _present(p)).strip()
+
+
+@functools.lru_cache(maxsize=1)
+def _default_phone_extractor() -> PhoneInfoExtractor:
+    return PhoneInfoExtractor()
+
+
+def resolve_product_ml_identity(
+    product: dict[str, Any],
+    *,
+    extractor: PhoneInfoExtractor | None = None,
+) -> dict[str, str]:
+    """
+    Parse products.name → model_line, model_number, variant cho SmartPricePredictor.
+    model_series trong MySQL chỉ là thế hệ (iPhone 15); variant nằm trong name.
+    """
+    name = str(product.get("name") or "").strip()
+    if name:
+        ext = extractor or _default_phone_extractor()
+        feats = ext.extract_all_info(name)
+        model_line = feats.get("model_line")
+        if _present(model_line):
+            variant = _variant_without_redundancy(
+                feats.get("variant"), model_line, feats.get("model_number")
+            )
+            return {
+                "model_line": str(model_line).strip(),
+                "model_number": str(feats.get("model_number") or "").strip(),
+                "variant": str(variant or "").strip(),
+            }
+
+    fallback = str(product.get("model_series") or product.get("name") or "").strip()
+    return {"model_line": fallback, "model_number": "", "variant": ""}
 
 
 def build_base_specs(row: dict) -> str:

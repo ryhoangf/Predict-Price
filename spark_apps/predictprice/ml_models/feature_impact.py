@@ -112,10 +112,23 @@ def counterfactual_impact_report(
 
         alt_yen = predict_yen(predictor, alt)
         delta_yen = float(alt_yen - base_yen)
+        delta_vnd = round(delta_yen * float(yen_to_vnd), 2)
+        # delta > 0: nâng yếu tố lên chuẩn → giá tăng → trạng thái hiện tại đang "thiệt" |delta|
+        deficit_vnd = round(max(0.0, delta_vnd), 2)
+        gain_if_fixed_vnd = deficit_vnd
         impacts.append({
-            "id": sc.id, "label_vi": sc.label_vi, "field": sc.field,
-            "value_before": before_val, "value_reference": sc.reference,
-            "delta_yen": round(delta_yen, 2), "delta_vnd": round(delta_yen * float(yen_to_vnd), 2),
+            "id": sc.id,
+            "label_vi": sc.label_vi,
+            "field": sc.field,
+            "value_before": before_val,
+            "value_reference": sc.reference,
+            "delta_yen": round(delta_yen, 2),
+            "delta_vnd": delta_vnd,
+            "deficit_vnd": deficit_vnd,
+            "gain_if_fixed_vnd": gain_if_fixed_vnd,
+            "message_vi": _impact_message_vi(
+                sc.label_vi, before_val, sc.reference, deficit_vnd, delta_vnd
+            ),
         })
 
     return {
@@ -124,8 +137,37 @@ def counterfactual_impact_report(
         "baseline_prediction_vnd": round(base_yen * float(yen_to_vnd), 2),
         "yen_to_vnd": float(yen_to_vnd),
         "impacts": impacts,
-        "disclaimer": "Mỗi impact chỉ đổi một yếu tố; không cộng tuyến tính khi đổi nhiều yếu tố.",
+        "disclaimer": (
+            "Mỗi dòng chỉ đổi một yếu tố so với mức tham chiếu; "
+            "deficit_vnd = mức thiệt so với chuẩn (không cộng tuyến tính khi sửa nhiều yếu tố cùng lúc)."
+        ),
     }
+
+
+def _impact_message_vi(
+    label_vi: str,
+    value_before: Any,
+    value_reference: Any,
+    deficit_vnd: float,
+    delta_vnd: float,
+) -> str:
+    if deficit_vnd <= 0 and delta_vnd <= 0:
+        if value_before == value_reference:
+            return f"{label_vi}: đã đạt mức tham chiếu ({value_reference})."
+        return f"{label_vi}: mô hình không ước lượng chênh lệch đáng kể so với chuẩn."
+    if "Pin" in label_vi and value_before is not None:
+        return (
+            f"Pin còn {value_before}% (so với {value_reference}%): "
+            f"ước tính thiệt ~{deficit_vnd:,.0f} ₫"
+        ).replace(",", ".")
+    if label_vi.startswith("Có hộp") and not value_before:
+        return f"Thiếu hộp phụ kiện: ước tính thiệt ~{deficit_vnd:,.0f} ₫".replace(",", ".")
+    if label_vi.startswith("Có sạc") and not value_before:
+        return f"Thiếu sạc: ước tính thiệt ~{deficit_vnd:,.0f} ₫".replace(",", ".")
+    return (
+        f"{label_vi} ({value_before} → {value_reference}): "
+        f"ước tính thiệt ~{deficit_vnd:,.0f} ₫"
+    ).replace(",", ".")
 
 
 def raw_listing_from_flat_json(data: dict[str, Any]) -> dict[str, Any]:

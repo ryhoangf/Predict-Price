@@ -1,0 +1,13 @@
+{
+  "horizon_days": 30,
+  "min_history_points_trend": 2,
+  "min_history_points_high_confidence": 10,
+  "history_blend_weight_cap_days": 14,
+  "model_blend_weight_when_sparse_history": 0.35,
+  "max_daily_change_pct": 3.0,
+  "default_phone_depreciation_pct_per_day": -0.12,
+  "min_horizon_change_pct": -6.0,
+  "max_horizon_change_pct": 10.0,
+  "yen_to_vnd": 175,
+  "disclaimer": "Dự báo 30 ngày kết hợp lịch sử thị trường (price_history) và mô hình SmartPricePredictor; không đảm bảo giá thực tế từng ngày."
+}
