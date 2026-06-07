@@ -339,6 +339,84 @@ def build_standard_name(row: dict) -> str | None:
     return name
 
 
+def _normalize_spec_gb(value: Any) -> str | None:
+    if not _present(value):
+        return None
+    s = str(value).strip().upper().replace(" ", "")
+    m_tb = re.match(r"^(\d+(?:\.\d+)?)TB$", s)
+    if m_tb:
+        return str(int(round(float(m_tb.group(1)) * 1024)))
+    m_gb = re.match(r"^(\d+(?:\.\d+)?)GB?$", s)
+    if m_gb:
+        return str(int(round(float(m_gb.group(1)))))
+    m_num = re.match(r"^(\d+(?:\.\d+)?)$", s)
+    if m_num:
+        return str(int(round(float(m_num.group(1)))))
+    return None
+
+
+def _specs_from_row(row: dict) -> tuple[str | None, str | None]:
+    storage_val = row.get("storage") if _present(row.get("storage")) else row.get("capacity")
+    return _normalize_spec_gb(storage_val), _normalize_spec_gb(row.get("ram"))
+
+
+def _format_storage_label(storage_gb: str | None) -> str | None:
+    if not storage_gb:
+        return None
+    try:
+        gb = int(storage_gb)
+    except (TypeError, ValueError):
+        return None
+    if gb <= 0:
+        return None
+    if gb >= 1024 and gb % 1024 == 0:
+        return f"{gb // 1024}TB"
+    return f"{gb}GB"
+
+
+def _format_ram_label(ram_gb: str | None) -> str | None:
+    if not ram_gb:
+        return None
+    try:
+        gb = int(ram_gb)
+    except (TypeError, ValueError):
+        return None
+    if gb <= 0:
+        return None
+    return f"{gb}GB RAM"
+
+
+def build_product_display_name(row: dict) -> str | None:
+    """Catalog display name: model identity plus known storage/RAM suffix."""
+    base_name = build_standard_name(row)
+    if not base_name:
+        return None
+    storage, ram = _specs_from_row(row)
+    suffixes = [x for x in (_format_storage_label(storage), _format_ram_label(ram)) if x]
+    if not suffixes:
+        return base_name
+    base_lc = base_name.lower()
+    kept = [s for s in suffixes if s.lower() not in base_lc]
+    return " ".join([base_name, *kept]).strip()
+
+
+def build_product_identity_key(row: dict) -> str | None:
+    """Stable product key: brand + model identity + normalized storage/RAM."""
+    base_name = build_standard_name(row)
+    if not base_name:
+        return None
+    brand = str(row.get("brand") or "").strip().lower()
+    storage, ram = _specs_from_row(row)
+    return "|".join(
+        [
+            brand,
+            re.sub(r"\s+", " ", base_name).strip().lower(),
+            storage or "",
+            ram or "",
+        ]
+    )
+
+
 def build_model_series(row: dict) -> str:
     parts = [row.get("model_line"), row.get("model_number")]
     return " ".join(str(p) for p in parts if _present(p)).strip()
@@ -377,18 +455,37 @@ def resolve_product_ml_identity(
     return {"model_line": fallback, "model_number": "", "variant": ""}
 
 
+def _parse_base_specs_dict(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not _present(raw):
+        return {}
+    try:
+        return json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def product_identity_key_from_product_row(product: dict[str, Any]) -> str | None:
+    """Identity key for existing MySQL products, including legacy model-only names."""
+    specs = _parse_base_specs_dict(product.get("base_specs"))
+    ext = _default_phone_extractor()
+    row = row_from_mongo_doc(
+        {
+            "name": product.get("name") or product.get("model_series") or "",
+            "brand": product.get("brand"),
+            "storage": specs.get("storage"),
+            "ram": specs.get("ram"),
+        },
+        ext,
+    )
+    if not _present(row.get("brand")) and _present(product.get("brand")):
+        row["brand"] = product.get("brand")
+    return build_product_identity_key(row)
+
+
 def build_base_specs(row: dict) -> str:
-    storage_val = row.get("storage") if _present(row.get("storage")) else row.get("capacity")
-    storage = (
-        str(storage_val).replace("GB", "").replace("gb", "").strip()
-        if _present(storage_val)
-        else None
-    )
-    ram = (
-        str(row.get("ram")).replace("GB", "").replace("gb", "").strip()
-        if _present(row.get("ram"))
-        else None
-    )
+    storage, ram = _specs_from_row(row)
     return json.dumps({"storage": storage, "ram": ram})
 
 

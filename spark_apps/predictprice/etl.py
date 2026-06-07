@@ -292,14 +292,22 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["brand"])
     print(f"After removing items without Brand (Junk Filter): {len(df)} ({before_brand - len(df)} dropped)")
 
-    from NLP.title_nlp import build_base_specs, build_model_series, build_standard_name
+    from NLP.title_nlp import (
+        build_base_specs,
+        build_model_series,
+        build_product_display_name,
+        build_product_identity_key,
+    )
 
     # 4.2–4.4 Identity: name = model only (iPhone 12 Pro Max); brand/specs tách cột
     def _identity_row(row):
         return row.to_dict()
 
     df["standard_name"] = df.apply(
-        lambda r: build_standard_name(_identity_row(r)), axis=1
+        lambda r: build_product_display_name(_identity_row(r)), axis=1
+    )
+    df["product_identity_key"] = df.apply(
+        lambda r: build_product_identity_key(_identity_row(r)), axis=1
     )
     df["model_series"] = df.apply(
         lambda r: build_model_series(_identity_row(r)), axis=1
@@ -310,8 +318,9 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     before_identity = len(df)
-    df = df.dropna(subset=["standard_name"])
+    df = df.dropna(subset=["standard_name", "product_identity_key"])
     df = df[df["standard_name"].astype(str).str.strip().str.len() > 0]
+    df = df[df["product_identity_key"].astype(str).str.strip().str.len() > 0]
     if before_identity - len(df) > 0:
         print(
             f"After model identity (no model_line/number in title): "
@@ -327,7 +336,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
 
     # Step 5: Validate tính toàn vẹn của Identity
     before_validation = len(df)
-    df = df.dropna(subset=["standard_name", "source_url"])
+    df = df.dropna(subset=["standard_name", "product_identity_key", "source_url"])
     print(f"After NLP validation (Null Identity): {len(df)} ({before_validation - len(df)} dropped)")
 
     # Step 6: Handle Color (Cột color đã được Spark trích xuất)
@@ -355,32 +364,53 @@ def sync_products_master(df: pd.DataFrame, engine):
     """
     Sync products master table
     """
+    from NLP.title_nlp import product_identity_key_from_product_row
+
     unique_products = df[
-        ['standard_name', 'brand', 'model_series', 'category', 'base_specs']
-    ].drop_duplicates(subset=['standard_name'])
+        ['product_identity_key', 'standard_name', 'brand', 'model_series', 'category', 'base_specs']
+    ].drop_duplicates(subset=['product_identity_key'])
 
     if unique_products.empty: 
         return {}
 
     print(f"\n--- Syncing Products Master ---")
-    print(f"Processing {len(unique_products)} unique models...")
+    print(f"Processing {len(unique_products)} unique product variants...")
 
     with engine.connect() as conn:
-        existing_db = pd.read_sql("SELECT product_id, name FROM products", conn)
+        existing_db = pd.read_sql(
+            "SELECT product_id, name, brand, model_series, base_specs FROM products",
+            conn,
+        )
     
-    product_map = dict(zip(existing_db['name'], existing_db['product_id']))
+    product_map = {}
+    duplicate_existing_keys = 0
+    for _, existing in existing_db.iterrows():
+        product_key = product_identity_key_from_product_row(existing.to_dict())
+        if not product_key:
+            continue
+        if product_key in product_map:
+            duplicate_existing_keys += 1
+            continue
+        product_map[product_key] = existing['product_id']
+
+    if duplicate_existing_keys:
+        print(
+            f"Warning: {duplicate_existing_keys} existing products share an identity key; "
+            "using the first product_id for new listings."
+        )
+
     new_records = []
 
     for _, row in unique_products.iterrows():
-        p_name = row['standard_name']
-        if p_name not in product_map:
+        product_key = row['product_identity_key']
+        if product_key not in product_map:
             new_id = str(uuid.uuid4())
             new_records.append({
-                'product_id': new_id, 'name': p_name, 'brand': row['brand'],
+                'product_id': new_id, 'name': row['standard_name'], 'brand': row['brand'],
                 'model_series': row['model_series'], 'category': row['category'],
                 'base_specs': row['base_specs']
             })
-            product_map[p_name] = new_id
+            product_map[product_key] = new_id
     
     if new_records:
         print(f"✓ Registering {len(new_records)} NEW products...")
@@ -412,8 +442,11 @@ def load_listings_and_history(df: pd.DataFrame, product_map, engine):
     """
     Load listings và tính toán Price History ĐÚNG theo product_id + date
     """
-    df['product_id'] = df['standard_name'].map(product_map)
+    df['product_id'] = df['product_identity_key'].map(product_map)
     valid_df = df.dropna(subset=['product_id'])
+    missing_product_ids = len(df) - len(valid_df)
+    if missing_product_ids:
+        print(f"Warning: {missing_product_ids} listings could not resolve product_id.")
     
     print(f"\n" + "="*60)
     print("STEP 3: LOAD TO MYSQL")
