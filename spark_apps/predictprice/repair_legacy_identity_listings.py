@@ -71,7 +71,21 @@ def _model_hits(text_value: str) -> set[str]:
         "oppo": r"\b(?:oppo|reno)\s*[a-z0-9]*",
         "motorola": r"\b(?:moto|motorola)\s+[a-z0-9]+",
     }
-    return {name for name, pat in patterns.items() if re.search(pat, text_lc, re.IGNORECASE)}
+    hits = {name for name, pat in patterns.items() if re.search(pat, text_lc, re.IGNORECASE)}
+    keyword_hints = {
+        "iphone": ("iphone", "アイフォン"),
+        "galaxy": ("galaxy",),
+        "pixel": ("pixel",),
+        "redmi": ("redmi",),
+        "xperia": ("xperia",),
+        "aquos": ("aquos",),
+        "oppo": ("oppo", "reno"),
+        "motorola": ("motorola", "moto"),
+    }
+    for name, words in keyword_hints.items():
+        if any(word in text_lc for word in words):
+            hits.add(name)
+    return hits
 
 
 def _is_mixed_bundle(text_value: str) -> bool:
