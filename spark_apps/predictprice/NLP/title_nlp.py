@@ -248,7 +248,7 @@ class PhoneInfoExtractor:
             model_line = "Mate"
             model_number = f"{match.group(1)} {suffix.title()}".strip() if suffix else match.group(1)
         elif match := re.search(
-            r'(?i)(?:huawei\s+)?p\s*(\d+)\s*(pro|lite|plus)?',
+            r'(?i)(?:\bhuawei\s+)?\bp\s*(\d+)\s*(pro|lite|plus)?\b',
             text,
         ):
             suffix = (match.group(2) or "").strip()
