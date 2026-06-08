@@ -643,7 +643,9 @@ def predict_product_prices(engine):
                     p.model_series,
                     p.base_specs
                 FROM products p
-                WHERE NOT EXISTS (
+                WHERE COALESCE(p.category, '') <> 'Review'
+                AND COALESCE(p.brand, '') <> 'Needs Review'
+                AND NOT EXISTS (
                     SELECT 1 FROM price_forecasts pf
                     WHERE pf.product_id = p.product_id
                     AND pf.forecast_date = CURDATE()
