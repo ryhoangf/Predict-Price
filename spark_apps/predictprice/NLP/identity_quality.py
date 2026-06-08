@@ -9,6 +9,7 @@ import pandas as pd
 
 BAD_AMBIGUOUS_STORAGE_GB = {"0", "1", "4", "8", "12"}
 GENERIC_STORAGE_RE = re.compile(r"^\s*[A-Za-z]+\s+(?:\d+\s*(?:GB|TB)|\d+)\s*$", re.IGNORECASE)
+HIGH_END_1TB_TOKENS = {"pro", "ultra", "max", "fold"}
 
 _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "iphone": re.compile(r"\biphone\s*(?:se\s*\d*|\d{1,2}\s*(?:pro\s*max|pro|max|plus|mini|s)?)?\b", re.IGNORECASE),
@@ -109,6 +110,15 @@ def identity_quality_reason(row: dict[str, Any]) -> str | None:
     if storage in BAD_AMBIGUOUS_STORAGE_GB:
         if storage == ram or not has_explicit_storage_marker(text_value, storage):
             return "ambiguous_storage_value"
+    if storage == "1024":
+        identity_text = normalize_text(
+            " ".join(
+                str(row.get(k) or "")
+                for k in ("standard_name", "name", "model_line", "model_number", "variant")
+            )
+        ).lower()
+        if not any(token in identity_text.split() for token in HIGH_END_1TB_TOKENS):
+            return "suspicious_1tb_storage"
 
     return None
 
