@@ -220,9 +220,8 @@ def _insert_review(
 
 
 def classify_listing(listing: dict[str, Any], extractor: PhoneInfoExtractor) -> tuple[str, dict[str, Any] | None]:
-    full_text = _identity_text(
-        " ".join(str(x) for x in (listing.get("product_name"), listing.get("description")) if _present(x))
-    )
+    source_text = listing.get("description") if _present(listing.get("description")) else listing.get("product_name")
+    full_text = _identity_text(source_text)
     canonical = _canonical_from_text(full_text, extractor)
 
     if listing["product_id"] in {
@@ -243,6 +242,13 @@ def classify_listing(listing: dict[str, Any], extractor: PhoneInfoExtractor) -> 
     name_lc = str(canonical.get("name") or "").lower()
     if not name_lc.startswith("iphone"):
         return "quarantine_unclear_identity", canonical
+
+    if re.search(r"iphone\s+4\s+(?:plus|mini)\b", name_lc):
+        return "quarantine_invalid_iphone_variant", canonical
+    if re.search(r"iphone\s+(?:5|5s|5c)\s+(?:plus|mini|pro)\b", name_lc):
+        return "quarantine_invalid_iphone_variant", canonical
+    if re.search(r"iphone\s+(?:6|6s|7|8)\s+(?:mini|pro)\b", name_lc):
+        return "quarantine_invalid_iphone_variant", canonical
 
     return "migrate", canonical
 
