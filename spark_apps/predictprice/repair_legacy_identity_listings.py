@@ -50,6 +50,15 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _identity_text(value: Any) -> str:
+    text_value = _normalize_text(value)
+    for marker in (" #", "＃", "ご覧いただきありがとうございます", "ご覧頂きありがとうございます"):
+        idx = text_value.find(marker)
+        if idx > 0:
+            text_value = text_value[:idx]
+    return text_value[:900].strip()
+
+
 def _model_hits(text_value: str) -> set[str]:
     text_lc = text_value.lower()
     patterns = {
@@ -67,11 +76,7 @@ def _model_hits(text_value: str) -> set[str]:
 
 def _is_mixed_bundle(text_value: str) -> bool:
     hits = _model_hits(text_value)
-    if len(hits) >= 2:
-        return True
-    text_lc = text_value.lower()
-    bundle_markers = ("セット", "まとめ", " and ", " & ", "+", " と", "他")
-    return len(hits) >= 1 and any(marker in text_lc for marker in bundle_markers)
+    return len(hits) >= 2
 
 
 def _canonical_from_text(text_value: str, extractor: PhoneInfoExtractor) -> dict[str, Any] | None:
@@ -215,7 +220,7 @@ def _insert_review(
 
 
 def classify_listing(listing: dict[str, Any], extractor: PhoneInfoExtractor) -> tuple[str, dict[str, Any] | None]:
-    full_text = _normalize_text(
+    full_text = _identity_text(
         " ".join(str(x) for x in (listing.get("product_name"), listing.get("description")) if _present(x))
     )
     canonical = _canonical_from_text(full_text, extractor)
