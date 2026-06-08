@@ -535,17 +535,8 @@ def _format_ram_label(ram_gb: str | None) -> str | None:
 
 
 def build_product_display_name(row: dict) -> str | None:
-    """Catalog display name: model identity plus known storage/RAM suffix."""
-    base_name = build_standard_name(row)
-    if not base_name:
-        return None
-    storage, ram = _specs_from_row(row)
-    suffixes = [x for x in (_format_storage_label(storage), _format_ram_label(ram)) if x]
-    if not suffixes:
-        return base_name
-    base_lc = base_name.lower()
-    kept = [s for s in suffixes if s.lower() not in base_lc]
-    return " ".join([base_name, *kept]).strip()
+    """Catalog display name: model identity only; storage/RAM live in base_specs."""
+    return build_standard_name(row)
 
 
 def build_product_identity_key(row: dict) -> str | None:
