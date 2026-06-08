@@ -104,6 +104,15 @@ def identity_quality_reason(row: dict[str, Any]) -> str | None:
     if is_generic_identity_row(row):
         return "generic_brand_storage_without_model"
 
+    model_number = normalize_text(row.get("model_number"))
+    if model_number.isdigit():
+        try:
+            model_year = int(model_number)
+        except ValueError:
+            model_year = 0
+        if 2020 <= model_year <= 2030:
+            return "suspicious_year_model_number"
+
     specs = _json_dict(row.get("base_specs"))
     storage = normalize_text(specs.get("storage"))
     ram = normalize_text(specs.get("ram"))
@@ -119,6 +128,13 @@ def identity_quality_reason(row: dict[str, Any]) -> str | None:
         ).lower()
         if not any(token in identity_text.split() for token in HIGH_END_1TB_TOKENS):
             return "suspicious_1tb_storage"
+    if storage.isdigit():
+        try:
+            storage_gb = int(storage)
+        except ValueError:
+            storage_gb = 0
+        if storage_gb >= 2048:
+            return "suspicious_large_storage"
 
     return None
 
