@@ -897,7 +897,7 @@ def mark_needs_review_in_mongo(review_df: pd.DataFrame):
                     "status": "needs_review",
                     "processed": True,
                     "processed_at": now,
-                    "review_reason": "low_confidence_product_identity",
+                    "review_reason": "product_identity_needs_review",
                 }
             },
         )
@@ -946,13 +946,20 @@ def main():
     
     # Lấy danh sách các URL "SỐNG SÓT" qua tất cả các màng lọc
     review_urls = []
+    from NLP.identity_quality import split_identity_quality_gate
     from NLP.product_matcher import apply_product_matching_gate
+
+    df_clean, identity_review_df = split_identity_quality_gate(df_clean)
+    identity_review_urls = mark_needs_review_in_mongo(identity_review_df)
+    if identity_review_urls:
+        print(f"Identity quality gate held back {len(identity_review_urls)} row(s) for review.")
 
     existing_products_df = load_existing_products(engine)
     df_clean, review_df = apply_product_matching_gate(df_clean, existing_products_df)
-    review_urls = mark_needs_review_in_mongo(review_df)
-    if review_urls:
-        print(f"Product matching gate held back {len(review_urls)} row(s) for review.")
+    matcher_review_urls = mark_needs_review_in_mongo(review_df)
+    review_urls = list(set(identity_review_urls) | set(matcher_review_urls))
+    if matcher_review_urls:
+        print(f"Product matching gate held back {len(matcher_review_urls)} row(s) for review.")
 
     if df_clean.empty:
         print("\nNo valid data after product matching gate.")
