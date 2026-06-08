@@ -14,6 +14,7 @@ import config as cfg
 MONGO_URI = cfg.MONGO_URI
 DB_NAME = cfg.DB_NAME
 COLLECTION_NAME = cfg.COLLECTION_NAME
+NEEDS_REVIEW_COLLECTION = os.getenv("MONGO_NEEDS_REVIEW_COLLECTION", "needs_review")
 MYSQL_URI = f"mysql+pymysql://{cfg.MYSQL_USER}:{cfg.MYSQL_PASSWORD}@{cfg.MYSQL_HOST}:{cfg.MYSQL_PORT}/{cfg.MYSQL_DB}"
 
 BATCH_SIZE = 500
@@ -648,6 +649,10 @@ def predict_product_prices(engine):
                     AND pf.forecast_date = CURDATE()
                 )
             """, conn)
+
+        if products_df.empty:
+            print("All products have today's forecast already.")
+            return
         from NLP.title_nlp import resolve_product_ml_identity
 
         def _ml_identity(row):
@@ -825,6 +830,81 @@ def mark_dropped_in_mongo(urls):
         print(f"Warning: Could not mark dropped documents in Mongo: {e}")
 
 
+def load_existing_products(engine) -> pd.DataFrame:
+    try:
+        with engine.connect() as conn:
+            return pd.read_sql(
+                "SELECT product_id, name, brand, model_series, base_specs FROM products",
+                conn,
+            )
+    except Exception as exc:
+        print(f"Warning: Could not load existing products for matching: {exc}")
+        return pd.DataFrame()
+
+
+def mark_needs_review_in_mongo(review_df: pd.DataFrame):
+    """
+    Route low-confidence product identity rows away from MySQL product creation.
+    Original raw docs keep their date fields; only status/processed markers are changed.
+    """
+    if review_df is None or review_df.empty:
+        return []
+
+    urls = [
+        str(u)
+        for u in review_df.get("source_url", pd.Series(dtype=str)).dropna().tolist()
+        if str(u).strip()
+    ]
+    if not urls:
+        return []
+
+    try:
+        print(f"Routing {len(urls)} records to Mongo '{NEEDS_REVIEW_COLLECTION}'...")
+        client = pymongo.MongoClient(MONGO_URI)
+        db = client[DB_NAME]
+        raw_col = db[COLLECTION_NAME]
+        review_col = db[NEEDS_REVIEW_COLLECTION]
+
+        now = datetime.now()
+        review_records = []
+        keep_cols = [
+            "source_url", "name_raw", "description", "price_raw", "price_yen",
+            "platform", "brand", "model_series", "standard_name",
+            "product_identity_key", "base_specs", "product_match_confidence",
+            "product_match_reason", "candidate_identity_key", "candidate_name",
+        ]
+        for _, row in review_df.iterrows():
+            rec = {k: _nan_to_none(row.get(k)) for k in keep_cols if k in review_df.columns}
+            rec["review_type"] = "product_identity"
+            rec["status"] = "needs_review"
+            rec["created_at"] = now
+            rec["updated_at"] = now
+            review_records.append(rec)
+
+        for rec in review_records:
+            review_col.update_one(
+                {"source_url": rec.get("source_url"), "review_type": "product_identity"},
+                {"$set": rec},
+                upsert=True,
+            )
+
+        raw_col.update_many(
+            {"link": {"$in": urls}},
+            {
+                "$set": {
+                    "status": "needs_review",
+                    "processed": True,
+                    "processed_at": now,
+                    "review_reason": "low_confidence_product_identity",
+                }
+            },
+        )
+        return urls
+    except Exception as e:
+        print(f"Warning: Could not route needs_review documents in Mongo: {e}")
+        return []
+
+
 def main():
     print("\n" + "="*60)
     print("  ETL PIPELINE - WITH ML PREDICTION")
@@ -839,7 +919,6 @@ def main():
         # Vẫn chạy prediction cho products cũ
         predict_product_prices(engine)
         return
-    
     # Lưu lại toàn bộ URL gốc từ MongoDB để đối chiếu ở bước cuối
     all_incoming_urls = df_raw['link'].tolist() if 'link' in df_raw.columns else []
     
@@ -864,6 +943,23 @@ def main():
         return
     
     # Lấy danh sách các URL "SỐNG SÓT" qua tất cả các màng lọc
+    review_urls = []
+    from NLP.product_matcher import apply_product_matching_gate
+
+    existing_products_df = load_existing_products(engine)
+    df_clean, review_df = apply_product_matching_gate(df_clean, existing_products_df)
+    review_urls = mark_needs_review_in_mongo(review_df)
+    if review_urls:
+        print(f"Product matching gate held back {len(review_urls)} row(s) for review.")
+
+    if df_clean.empty:
+        print("\nNo valid data after product matching gate.")
+        dropped_urls = list(set(all_incoming_urls) - set(review_urls))
+        if dropped_urls:
+            mark_dropped_in_mongo(dropped_urls)
+        predict_product_prices(engine)
+        return
+
     successful_urls = df_clean['source_url'].tolist()
     
     # STEP 3: Load listings
@@ -879,7 +975,7 @@ def main():
     update_mongo_status(successful_urls)
     
     # 5.2: Đánh dấu 'dropped_etl' cho các tin rác bị rơi rụng giữa đường
-    dropped_urls = list(set(all_incoming_urls) - set(successful_urls))
+    dropped_urls = list(set(all_incoming_urls) - set(successful_urls) - set(review_urls))
     if dropped_urls:
         mark_dropped_in_mongo(dropped_urls)
     

@@ -22,7 +22,57 @@ _BRAND_FIX_RE = (
     (re.compile(r'\bgalaxy\b', re.IGNORECASE), 'Galaxy'),
     (re.compile(r'\bpixel\b', re.IGNORECASE), 'Pixel'),
     (re.compile(r'\bxperia\b', re.IGNORECASE), 'Xperia'),
+    (re.compile(r'\bpoco\b', re.IGNORECASE), 'POCO'),
+    (re.compile(r'\bmoto\b', re.IGNORECASE), 'Moto'),
+    (re.compile(r'\bzenfone\b', re.IGNORECASE), 'Zenfone'),
+    (re.compile(r'\brealme\b', re.IGNORECASE), 'Realme'),
 )
+_MODEL_BRAND_OVERRIDES = {
+    "iPhone": "Apple",
+    "Galaxy": "Samsung",
+    "Pixel": "Google",
+    "Xperia": "Sony",
+    "AQUOS": "SHARP",
+    "Redmi": "Xiaomi",
+    "Reno": "OPPO",
+    "Find": "OPPO",
+    "A": "OPPO",
+    "Mate": "Huawei",
+    "P": "Huawei",
+    "nova": "Huawei",
+    "Enjoy": "Huawei",
+    "POCO": "Xiaomi",
+    "Xiaomi": "Xiaomi",
+    "Mi": "Xiaomi",
+    "Moto": "Motorola",
+    "Edge": "Motorola",
+    "Razr": "Motorola",
+    "Zenfone": "ASUS",
+    "ROG Phone": "ASUS",
+    "Realme": "Realme",
+    "GT": "Realme",
+}
+_BRAND_CANONICAL = {
+    "apple": "Apple",
+    "samsung": "Samsung",
+    "google": "Google",
+    "sony": "Sony",
+    "xiaomi": "Xiaomi",
+    "oppo": "OPPO",
+    "sharp": "SHARP",
+    "huawei": "Huawei",
+    "motorola": "Motorola",
+    "asus": "ASUS",
+    "realme": "Realme",
+}
+_SKIP_BRAND_ALIASES = {"op"}
+_NON_BRAND_WORDS = {
+    "black", "white", "red", "green", "blue", "yellow", "orange", "purple",
+    "pink", "gold", "silver", "gray", "grey", "graphite", "starlight",
+    "midnight", "titanium", "natural", "cream", "lavender", "mint",
+}
+_IPHONE_13_STORAGE_GB = {"128", "256", "512", "1024"}
+_COMMON_STORAGE_GB = {"16", "32", "64", "128", "256", "512", "1024", "2048"}
 
 class PhoneInfoExtractor:
     def __init__(self, config_path='nlp_config.json'):
@@ -62,8 +112,11 @@ class PhoneInfoExtractor:
         """Nạp từ khóa từ JSON vào thuật toán cây của FlashText"""
         # 1. Nạp Brand
         for main_word, aliases in self.config.get('brands', {}).items():
+            canonical = _BRAND_CANONICAL.get(str(main_word).strip().lower(), main_word)
             for alias in aliases:
-                self.brand_processor.add_keyword(alias, main_word)
+                if str(alias).strip().lower() in _SKIP_BRAND_ALIASES:
+                    continue
+                self.brand_processor.add_keyword(alias, canonical)
                 
         # 2. Nạp Color
         for main_word, aliases in self.config.get('colors', {}).items():
@@ -120,7 +173,7 @@ class PhoneInfoExtractor:
         """Regex xử lý động cho Model Line và Number"""
         model_line, model_number = None, None
         
-        if match := re.search(r'iPhone\s*(\d+)\s*mini\b', text, re.IGNORECASE):
+        if match := re.search(r'iPhone\s*(\d{1,2})\s*mini\b', text, re.IGNORECASE):
             model_line, model_number = "iPhone", f"{match.group(1)} mini"
         elif match := re.search(
             r'iPhone\s*(SE\s*3|SE\s*2|SE3|SE2|SE)\b',
@@ -129,7 +182,7 @@ class PhoneInfoExtractor:
         ):
             raw = match.group(1).upper().replace(" ", "")
             model_line, model_number = "iPhone", raw
-        elif match := re.search(r'iPhone\s*(\d+|XR|XS|X)\b', text, re.IGNORECASE):
+        elif match := re.search(r'iPhone\s*(\d{1,2}|XR|XS|X)\b', text, re.IGNORECASE):
             model_line, model_number = "iPhone", match.group(1)
         elif match := re.search(
             r'Galaxy\s*Z\s*(Flip|Fold)\s*(\d+)|Galaxy\s*Z\s*(Flip|Fold)(\d+)',
@@ -149,10 +202,24 @@ class PhoneInfoExtractor:
             model_line, model_number = "Galaxy", match.group(1).strip()
         elif match := re.search(r'Pixel\s*(\d+[a-zA-Z]*)', text, re.IGNORECASE):
             model_line, model_number = "Pixel", match.group(1)
+        elif match := re.search(r'Xperia\s*(\d+\s*(?:[IVX]+|[A-Z])?|\d+[A-Z]?|[A-Z]\d+)', text, re.IGNORECASE):
+            model_line, model_number = "Xperia", match.group(1).strip()
         elif match := re.search(r'Xperia\s*([A-Z0-9\s]+?)(?:\s|　|$|SO-|SOG|XQ-)', text, re.IGNORECASE):
             model_line, model_number = "Xperia", match.group(1).strip()
         elif match := re.search(r'Redmi\s*(Note\s*\d+[a-zA-Z]*|\d+[a-zA-Z]*)', text, re.IGNORECASE):
             model_line, model_number = "Redmi", match.group(1).strip()
+        elif match := re.search(r'POCO\s*(F|X|M|C)\s*(\d+)\s*(Pro|Ultra|GT)?', text, re.IGNORECASE):
+            suffix = (match.group(3) or "").strip().title()
+            model_line = "POCO"
+            model_number = f"{match.group(1).upper()}{match.group(2)} {suffix}".strip()
+        elif match := re.search(r'\bMi\s*(\d+)\s*(Lite|Pro|Ultra|T)?\b', text, re.IGNORECASE):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Mi"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'\bXiaomi\s*(\d+)\s*(Lite|Pro|Ultra|T)?\b', text, re.IGNORECASE):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Xiaomi"
+            model_number = f"{match.group(1)} {suffix}".strip()
         elif match := re.search(r'AQUOS\s*([a-zA-Z0-9\s]+?)(?:\s|　|$|SH-)', text, re.IGNORECASE):
             model_line, model_number = "AQUOS", match.group(1).strip()
         elif match := re.search(
@@ -167,11 +234,11 @@ class PhoneInfoExtractor:
             model_line = "Find"
             suffix = (match.group(2) or "").upper()
             model_number = f"{match.group(1)} {suffix}".strip() if suffix else match.group(1)
-        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)s\b', text):
+        elif match := re.search(r'(?i)oppo\s+a\s*(\d+)s\b', text):
             model_line, model_number = "A", f"{match.group(1)}s"
-        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)([sx])\b', text):
+        elif match := re.search(r'(?i)oppo\s+a\s*(\d+)([sx])\b', text):
             model_line, model_number = "A", f"{match.group(1)}{match.group(2).upper()}"
-        elif match := re.search(r'(?i)(?:oppo\s+)?a\s*(\d+)\b', text):
+        elif match := re.search(r'(?i)oppo\s+a\s*(\d+)\b', text):
             model_line, model_number = "A", match.group(1)
         elif match := re.search(
             r'(?i)(?:huawei\s+)?mate\s*(\d+)\s*(pro|lite|rs)?',
@@ -191,6 +258,39 @@ class PhoneInfoExtractor:
             model_line, model_number = "nova", match.group(1).strip()
         elif match := re.search(r'(?i)(?:huawei\s+)?enjoy\s*(\d+)', text):
             model_line, model_number = "Enjoy", match.group(1)
+        elif match := re.search(r'(?i)moto\s*g\s*(\d+)\s*(power|play|plus|stylus)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Moto"
+            model_number = f"G{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)motorola\s+edge\s*(\d+)\s*(pro|neo|fusion|ultra)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Edge"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)edge\s*(\d+)\s*(pro|neo|fusion|ultra)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Edge"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)(?:motorola\s+)?razr\s*(\d+)\s*(ultra)?', text):
+            suffix = (match.group(1) or "").strip()
+            extra = (match.group(2) or "").strip().title()
+            model_line = "Razr"
+            model_number = f"{suffix} {extra}".strip()
+        elif match := re.search(r'(?i)zenfone\s*(\d+)\s*(ultra)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Zenfone"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)rog\s*phone\s*(\d+)\s*(pro|ultimate)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "ROG Phone"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)realme\s*gt\s*(\d+)\s*(neo|pro)?', text):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "GT"
+            model_number = f"{match.group(1)} {suffix}".strip()
+        elif match := re.search(r'(?i)realme\s*(\d+)\s*(pro|plus|x|i)?', text):
+            suffix = (match.group(2) or "").strip().upper()
+            model_line = "Realme"
+            model_number = f"{match.group(1)} {suffix}".strip()
 
         return model_line, model_number
 
@@ -205,12 +305,10 @@ class PhoneInfoExtractor:
             gb_value = number * 1024 if unit == 'TB' else number
             capacities.append((gb_value, f"{number}{unit}"))
             
-        if len(capacities) == 1: return capacities[0][1]
-        
         storage_candidates = [cap for cap in capacities if cap[0] >= 32]
         if storage_candidates:
             return max(storage_candidates, key=lambda x: x[0])[1]
-        return max(capacities, key=lambda x: x[0])[1]
+        return None
 
     def extract_ram(self, text):
         capacity_matches = re.findall(r'(\d+)\s*(GB|gb|ギガ)', text)
@@ -225,6 +323,27 @@ class PhoneInfoExtractor:
             return min(ram_candidates, key=lambda x: x[0])[1]
         return None
 
+    def normalize_brand_for_model(self, brand, model_line):
+        override = _MODEL_BRAND_OVERRIDES.get(model_line)
+        if override:
+            return override
+        if not brand:
+            return None
+        brand_str = str(brand).strip()
+        if brand_str.lower() in _NON_BRAND_WORDS:
+            return None
+        return brand_str
+
+    def filter_capacity_for_model(self, model_line, model_number, capacity):
+        if not capacity:
+            return None
+        storage_gb = _normalize_spec_gb(capacity)
+        model_number_lc = str(model_number or "").strip().lower()
+        if model_line == "iPhone" and model_number_lc.startswith("13"):
+            if storage_gb not in _IPHONE_13_STORAGE_GB:
+                return None
+        return capacity
+
     def extract_all_info(self, text):
         original_text = text
         preprocessed_text = self.preprocess_text(text)
@@ -236,18 +355,10 @@ class PhoneInfoExtractor:
         model_line, model_number = self.extract_model_info(preprocessed_text)
         ram = self.extract_ram(preprocessed_text)
         capacity = self.extract_capacity(preprocessed_text)
+        capacity = self.filter_capacity_for_model(model_line, model_number, capacity)
         
         # 3. Suy luận Brand nếu tiêu đề bị khuyết
-        brand = dict_features['brand']
-        if not brand and model_line:
-            brand_inference = {
-                'iPhone': 'Apple', 'Pixel': 'Google', 'Galaxy': 'Samsung',
-                'AQUOS': 'SHARP', 'Redmi': 'Xiaomi', 'Xperia': 'Sony',
-                'Reno': 'OPPO', 'Find': 'OPPO', 'A': 'OPPO',
-                'Mate': 'Huawei', 'P': 'Huawei', 'nova': 'Huawei', 'Enjoy': 'Huawei',
-            }
-            brand = brand_inference.get(model_line)
-
+        brand = self.normalize_brand_for_model(dict_features['brand'], model_line)
         return {
             'original_title': original_text,
             'preprocessed_title': preprocessed_text,
@@ -355,9 +466,44 @@ def _normalize_spec_gb(value: Any) -> str | None:
     return None
 
 
+def _is_iphone_row(row: dict) -> bool:
+    model_line = str(row.get("model_line") or "").strip().lower()
+    if model_line == "iphone":
+        return True
+    base_name = build_standard_name(row) or ""
+    return base_name.lower().startswith("iphone ")
+
+
+def _is_iphone_13_row(row: dict) -> bool:
+    if str(row.get("model_line") or "").strip().lower() == "iphone":
+        return str(row.get("model_number") or "").strip().lower().startswith("13")
+    base_name = build_standard_name(row) or ""
+    return base_name.lower().startswith("iphone 13")
+
+
 def _specs_from_row(row: dict) -> tuple[str | None, str | None]:
-    storage_val = row.get("storage") if _present(row.get("storage")) else row.get("capacity")
-    return _normalize_spec_gb(storage_val), _normalize_spec_gb(row.get("ram"))
+    if _present(row.get("capacity")):
+        storage_val = row.get("capacity")
+    elif _present(row.get("name_raw")):
+        storage_val = None
+    else:
+        storage_val = row.get("storage")
+    storage = _normalize_spec_gb(storage_val)
+    ram = _normalize_spec_gb(row.get("ram"))
+    if storage and storage not in _COMMON_STORAGE_GB:
+        storage = None
+    if ram:
+        try:
+            ram_gb = int(ram)
+        except (TypeError, ValueError):
+            ram_gb = 0
+        if ram_gb <= 0 or ram_gb > 24:
+            ram = None
+    if _is_iphone_13_row(row) and storage not in _IPHONE_13_STORAGE_GB:
+        storage = None
+    if _is_iphone_row(row):
+        ram = None
+    return storage, ram
 
 
 def _format_storage_label(storage_gb: str | None) -> str | None:
@@ -479,6 +625,7 @@ def product_identity_key_from_product_row(product: dict[str, Any]) -> str | None
         },
         ext,
     )
+    row["name_raw"] = None
     if not _present(row.get("brand")) and _present(product.get("brand")):
         row["brand"] = product.get("brand")
     return build_product_identity_key(row)
