@@ -116,6 +116,8 @@ def _load_product_targets(conn, extractor: PhoneInfoExtractor) -> dict[str, str]
     ).mappings()
     targets: dict[str, str] = {}
     for product in rows:
+        if product["product_id"] in LEGACY_PRODUCT_IDS:
+            continue
         canonical = _canonical_from_text(
             " ".join(
                 str(x)
@@ -125,6 +127,10 @@ def _load_product_targets(conn, extractor: PhoneInfoExtractor) -> dict[str, str]
             extractor,
         )
         if canonical:
+            stored_brand = str(product.get("brand") or "").strip().lower()
+            canonical_brand = str(canonical.get("brand") or "").strip().lower()
+            if stored_brand and canonical_brand and stored_brand != canonical_brand:
+                continue
             targets.setdefault(canonical["product_identity_key"], product["product_id"])
     return targets
 
