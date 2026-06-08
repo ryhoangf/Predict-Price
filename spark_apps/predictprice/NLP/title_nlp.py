@@ -499,6 +499,8 @@ def _specs_from_row(row: dict) -> tuple[str | None, str | None]:
             ram_gb = 0
         if ram_gb <= 0 or ram_gb > 24:
             ram = None
+    if storage and ram and storage == ram:
+        ram = None
     if _is_iphone_13_row(row) and storage not in _IPHONE_13_STORAGE_GB:
         storage = None
     if _is_iphone_row(row):
