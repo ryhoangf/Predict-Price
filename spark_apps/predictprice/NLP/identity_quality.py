@@ -10,6 +10,20 @@ import pandas as pd
 BAD_AMBIGUOUS_STORAGE_GB = {"0", "1", "4", "8", "12"}
 GENERIC_STORAGE_RE = re.compile(r"^\s*[A-Za-z]+\s+(?:\d+\s*(?:GB|TB)|\d+)\s*$", re.IGNORECASE)
 HIGH_END_1TB_TOKENS = {"pro", "ultra", "max", "fold"}
+GENERIC_MODEL_NAMES = {
+    "android",
+    "iphone",
+    "galaxy",
+    "pixel",
+    "xperia",
+    "aquos",
+    "redmi",
+    "xiaomi",
+    "oppo",
+    "sony",
+    "samsung",
+    "motorola",
+}
 
 _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "iphone": re.compile(r"\biphone\s*(?:se\s*\d*|\d{1,2}\s*(?:pro\s*max|pro|max|plus|mini|s)?)?\b", re.IGNORECASE),
@@ -93,6 +107,30 @@ def is_generic_identity_row(row: dict[str, Any]) -> bool:
         return True
     if brand and standard_name and GENERIC_STORAGE_RE.match(standard_name):
         return True
+    if standard_name.strip().lower() in GENERIC_MODEL_NAMES:
+        return True
+    return False
+
+
+def is_suspicious_future_or_unknown_model(row: dict[str, Any]) -> bool:
+    model_line = normalize_text(row.get("model_line")).lower()
+    model_number = normalize_text(row.get("model_number")).lower()
+    standard_name = normalize_text(row.get("standard_name") or row.get("name")).lower()
+
+    if model_line == "iphone" and model_number:
+        m = re.match(r"(\d{1,2})", model_number)
+        if m and int(m.group(1)) > 17:
+            return True
+    if model_line == "pixel" and model_number:
+        m = re.match(r"(\d{1,2})", model_number)
+        if m and int(m.group(1)) > 10:
+            return True
+    if model_line == "galaxy" and model_number:
+        m = re.search(r"\bs\s*(\d{1,2})", model_number)
+        if m and int(m.group(1)) > 26:
+            return True
+    if re.search(r"\b(?:iphone\s*1[89]|pixel\s*1[1-9]|galaxy\s*s\s*2[7-9])\b", standard_name):
+        return True
     return False
 
 
@@ -103,6 +141,9 @@ def identity_quality_reason(row: dict[str, Any]) -> str | None:
 
     if is_generic_identity_row(row):
         return "generic_brand_storage_without_model"
+
+    if is_suspicious_future_or_unknown_model(row):
+        return "suspicious_future_or_unknown_model"
 
     model_number = normalize_text(row.get("model_number"))
     if model_number.isdigit():

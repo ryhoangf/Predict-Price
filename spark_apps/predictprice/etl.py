@@ -64,6 +64,39 @@ except Exception as e:
 # print("Explanation Extractor Loaded.")
 
 # --- 1. EXTRACT ---
+def mark_junk_terminal_status() -> int:
+    """
+    Close known junk rows so Mongo backlog only shows actionable work.
+    Spark NLP has already decided these rows are junk; ETL intentionally skips
+    them, so they need a terminal status instead of staying extracted_layer2.
+    """
+    try:
+        client = pymongo.MongoClient(MONGO_URI)
+        col = client[DB_NAME][COLLECTION_NAME]
+        now = datetime.now()
+        result = col.update_many(
+            {
+                "status": "extracted_layer2",
+                "processed": False,
+                "is_junk": True,
+            },
+            {
+                "$set": {
+                    "status": "dropped_junk",
+                    "processed": True,
+                    "processed_at": now,
+                    "drop_reason": "junk_classifier",
+                }
+            },
+        )
+        if result.modified_count:
+            print(f"Marked {result.modified_count} junk docs as 'dropped_junk'.")
+        return int(result.modified_count)
+    except Exception as e:
+        print(f"Warning: Could not mark junk terminal status in Mongo: {e}")
+        return 0
+
+
 def extract() -> pd.DataFrame:
     """
     Extract data từ MongoDB - CHỈ lấy data mới chưa xử lý
@@ -813,7 +846,7 @@ def predict_product_prices(engine):
         import traceback
         traceback.print_exc()
 
-def mark_dropped_in_mongo(urls):
+def mark_dropped_in_mongo(urls, reason="etl_filtered"):
     """
     Đánh dấu các record bị loại (rác, lỗi giá, không có brand, trùng lặp...) là đã xử lý
     để lần sau hàm extract() không kéo lên lại làm tốn thời gian.
@@ -821,12 +854,19 @@ def mark_dropped_in_mongo(urls):
     if not urls: 
         return
     try:
-        print(f"Marking {len(urls)} dropped records as 'dropped_etl' in Mongo...")
+        print(f"Marking {len(urls)} dropped records as 'dropped_etl' in Mongo ({reason})...")
         client = pymongo.MongoClient(MONGO_URI)
         col = client[DB_NAME][COLLECTION_NAME]
         col.update_many(
             {"link": {"$in": urls}},
-            {"$set": {"processed": True, "processed_at": datetime.now(), "status": "dropped_etl"}}
+            {
+                "$set": {
+                    "processed": True,
+                    "processed_at": datetime.now(),
+                    "status": "dropped_etl",
+                    "drop_reason": reason,
+                }
+            }
         )
     except Exception as e:
         print(f"Warning: Could not mark dropped documents in Mongo: {e}")
@@ -898,6 +938,7 @@ def mark_needs_review_in_mongo(review_df: pd.DataFrame):
                     "processed": True,
                     "processed_at": now,
                     "review_reason": "product_identity_needs_review",
+                    "drop_reason": "product_identity_needs_review",
                 }
             },
         )
@@ -913,6 +954,7 @@ def main():
     print("="*60)
     
     engine = get_engine()
+    mark_junk_terminal_status()
     
     # STEP 1: Extract từ MongoDB
     df_raw = extract()
@@ -930,7 +972,7 @@ def main():
     if df_clean.empty:
         print("\nNo valid data after transformation.")
         # Toàn bộ data bị loại -> Đánh dấu dropped hết
-        mark_dropped_in_mongo(all_incoming_urls)
+        mark_dropped_in_mongo(all_incoming_urls, reason="transform_empty")
         predict_product_prices(engine)
         return
     
@@ -965,7 +1007,7 @@ def main():
         print("\nNo valid data after product matching gate.")
         dropped_urls = list(set(all_incoming_urls) - set(review_urls))
         if dropped_urls:
-            mark_dropped_in_mongo(dropped_urls)
+            mark_dropped_in_mongo(dropped_urls, reason="product_matching_gate")
         predict_product_prices(engine)
         return
 
@@ -986,7 +1028,7 @@ def main():
     # 5.2: Đánh dấu 'dropped_etl' cho các tin rác bị rơi rụng giữa đường
     dropped_urls = list(set(all_incoming_urls) - set(successful_urls) - set(review_urls))
     if dropped_urls:
-        mark_dropped_in_mongo(dropped_urls)
+        mark_dropped_in_mongo(dropped_urls, reason="etl_filtered_or_duplicate")
     
     print("\n" + "="*60)
     print("  ETL PIPELINE COMPLETED SUCCESSFULLY")
