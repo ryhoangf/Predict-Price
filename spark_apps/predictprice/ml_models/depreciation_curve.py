@@ -1,9 +1,10 @@
-"""Đường cong trượt giá (mô hình): quét device_age_years, giữ baseline cố định."""
+"""Đường cong trượt giá: neo giá thị trường + hình khấu hao ML (tỷ lệ)."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+from datetime import date, datetime
 from typing import Any, Optional
 
 import joblib
@@ -139,6 +140,185 @@ def aggregate_baseline_from_listings(
     return out
 
 
+def resolve_market_anchor_vnd(
+    history: list[dict[str, Any]] | None,
+    listings_df: pd.DataFrame | None,
+    *,
+    min_listings: int = 3,
+) -> dict[str, Any]:
+    """
+    Giá neo thị trường (VND): price_history gần nhất → median active_listings.
+    """
+    history = history or []
+    listings_df = listings_df if listings_df is not None else pd.DataFrame()
+
+    if history:
+        last = history[-1]
+        price = float(last.get("avg_price") or 0)
+        if price > 0:
+            rd = last.get("record_date")
+            if isinstance(rd, datetime):
+                rd = rd.date()
+            return {
+                "ok": True,
+                "anchor_price_vnd": price,
+                "anchor_source": "price_history",
+                "anchor_date": rd.isoformat() if hasattr(rd, "isoformat") else str(rd),
+                "history_points": len(history),
+                "listing_count": int(last.get("listing_count") or 0),
+            }
+
+    if not listings_df.empty and "price" in listings_df.columns:
+        prices = pd.to_numeric(listings_df["price"], errors="coerce").dropna()
+        if len(prices) >= min_listings:
+            med = float(prices.median())
+            if med > 0:
+                return {
+                    "ok": True,
+                    "anchor_price_vnd": med,
+                    "anchor_source": "active_listings_median",
+                    "anchor_date": date.today().isoformat(),
+                    "history_points": 0,
+                    "listing_count": int(len(prices)),
+                }
+
+    return {
+        "ok": False,
+        "anchor_price_vnd": 0.0,
+        "anchor_source": None,
+        "anchor_date": None,
+        "history_points": len(history),
+        "listing_count": 0,
+    }
+
+
+def predict_yen_at_device_age(
+    predictor: SmartPricePredictor,
+    raw_row: dict[str, Any],
+    device_age_years: float,
+    reference_year: int,
+) -> float:
+    """Một điểm giá YEN trên đường cong ML tại tuổi thiết bị cụ thể."""
+    eng = predictor.engineer_features(pd.DataFrame([raw_row]))
+    cols = predictor.feature_columns
+    if not cols:
+        raise ValueError("Model chưa load hoặc chưa có feature_columns")
+    row = eng.iloc[0].copy()
+    row["device_age_years"] = float(device_age_years)
+    row["release_year"] = float(int(reference_year - round(device_age_years)))
+    row["age_condition_interaction"] = row["device_age_years"] * row["condition_score"]
+    X = pd.DataFrame([row[list(cols)].values.astype(float)], columns=cols)
+    return float(predictor.model.predict(X)[0])
+
+
+def _enforce_monotonic_decreasing(ages: list[float], prices: list[float]) -> list[float]:
+    """Tuổi máy tăng → giá không tăng (khấu hao)."""
+    if not prices:
+        return prices
+    out = [float(prices[0])]
+    for i in range(1, len(prices)):
+        if ages[i] > ages[i - 1]:
+            out.append(min(float(prices[i]), out[-1]))
+        else:
+            out.append(float(prices[i]))
+    return out
+
+
+def _min_depreciation_ratios(
+    ages: list[float],
+    *,
+    age_now: float,
+    min_annual_dep_pct: float,
+) -> list[float]:
+    """
+    Sàn khấu hao: tuổi > age_now thì mỗi năm giảm tối thiểu min_annual_dep_pct%.
+    Tuổi < age_now được phép cao hơn anchor (máy mới hơn).
+    """
+    dep = float(min_annual_dep_pct) / 100.0
+    ratios: list[float] = []
+    for age in ages:
+        if age >= age_now:
+            years_older = float(age - age_now)
+            ratios.append((1.0 - dep) ** years_older)
+        else:
+            years_younger = float(age_now - age)
+            ratios.append((1.0 + dep) ** years_younger)
+    return ratios
+
+
+def _merge_ml_and_floor_ratios(
+    ml_ratios: list[float],
+    floor_ratios: list[float],
+    ages: list[float],
+    *,
+    age_now: float,
+) -> list[float]:
+    """Tuổi lớn hơn: lấy ratio thấp hơn (khấu hao mạnh hơn). Tuổi nhỏ hơn: lấy ratio cao hơn."""
+    out: list[float] = []
+    for ml_r, floor_r, age in zip(ml_ratios, floor_ratios, ages):
+        if age >= age_now:
+            out.append(min(float(ml_r), float(floor_r)))
+        else:
+            out.append(max(float(ml_r), float(floor_r)))
+    return out
+
+
+def _pin_anchor_at_age(
+    ages: list[float],
+    prices: list[float],
+    *,
+    age_now: float,
+    anchor_vnd: float,
+) -> list[float]:
+    if not ages or anchor_vnd <= 0:
+        return prices
+    idx = min(range(len(ages)), key=lambda i: abs(ages[i] - age_now))
+    out = list(prices)
+    out[idx] = float(anchor_vnd)
+    return out
+
+
+def market_anchored_curve_vnd(
+    predictor: SmartPricePredictor,
+    raw_row: dict[str, Any],
+    *,
+    anchor_vnd: float,
+    age_now: float,
+    age_min: float,
+    age_max: float,
+    age_step: float,
+    reference_year: int,
+    min_annual_dep_pct: float = 8.0,
+) -> tuple[list[float], list[float], list[float]]:
+    """
+    prices_vnd[age] = anchor × ratio(age); ratio = min(ML, sàn khấu hao năm).
+    Trả về (ages, prices_vnd, prices_yen_ml_raw).
+    """
+    ages, yen_raw = predict_depreciation_curve_yen(
+        predictor,
+        raw_row,
+        age_min=age_min,
+        age_max=age_max,
+        age_step=age_step,
+        reference_year=reference_year,
+    )
+    yen_now = predict_yen_at_device_age(predictor, raw_row, age_now, reference_year)
+    if yen_now <= 1e-6:
+        ml_ratios = [1.0] * len(yen_raw)
+    else:
+        ml_ratios = [float(y) / yen_now for y in yen_raw]
+
+    floor_ratios = _min_depreciation_ratios(
+        ages, age_now=age_now, min_annual_dep_pct=min_annual_dep_pct
+    )
+    ratios = _merge_ml_and_floor_ratios(ml_ratios, floor_ratios, ages, age_now=age_now)
+
+    vnd = [anchor_vnd * r for r in ratios]
+    vnd = _pin_anchor_at_age(ages, vnd, age_now=age_now, anchor_vnd=anchor_vnd)
+    vnd = _enforce_monotonic_decreasing(ages, vnd)
+    return ages, vnd, yen_raw
+
+
 def predict_depreciation_curve_yen(
     predictor: SmartPricePredictor,
     raw_row: dict[str, Any],
@@ -196,28 +376,20 @@ def compute_depreciation_curve_response(
     raw_row: dict[str, Any],
     *,
     product_id: str = "",
+    history: list[dict[str, Any]] | None = None,
+    listings_df: pd.DataFrame | None = None,
     yen_to_vnd: float = DEFAULT_YEN_TO_VND,
     config: Optional[dict] = None,
     model_path: Optional[str] = None,
     predictor: Optional[SmartPricePredictor] = None,
 ) -> dict[str, Any]:
     """
-    Payload gợi ý cho API: ages, giá yen/vnd, disclaimer, model_version, fingerprint baseline.
+    Đường cong khấu hao neo giá thị trường; ML chỉ định hình tỷ lệ theo tuổi máy.
     """
     cfg = config or load_curve_config()
     pred = predictor or load_predictor(model_path)
     mv = get_model_version(predictor=pred)
-
     ref_year = int(cfg.get("reference_year", 2026))
-    ages, yen = predict_depreciation_curve_yen(
-        pred,
-        raw_row,
-        age_min=float(cfg.get("age_min", 0)),
-        age_max=float(cfg.get("age_max", 8)),
-        age_step=float(cfg.get("age_step", 1)),
-        reference_year=ref_year,
-    )
-    vnd = curve_to_vnd(yen, yen_to_vnd)
     fp = baseline_dict_fingerprint(raw_row)
     grid = {
         "age_min": cfg.get("age_min"),
@@ -225,16 +397,71 @@ def compute_depreciation_curve_response(
         "age_step": cfg.get("age_step"),
         "reference_year": ref_year,
     }
+    min_listings = int(cfg.get("min_listings_for_anchor", 3))
+
+    eng = pred.engineer_features(pd.DataFrame([raw_row]))
+    age_now = float(eng.iloc[0]["device_age_years"])
+
+    anchor_info = resolve_market_anchor_vnd(
+        history,
+        listings_df,
+        min_listings=min_listings,
+    )
+
+    if not anchor_info["ok"]:
+        return {
+            "status": "insufficient_data",
+            "status_message_vi": (
+                "Chưa có price_history hoặc đủ listing đang bán "
+                f"(cần ≥1 ngày history hoặc ≥{min_listings} listing) để neo giá thị trường."
+            ),
+            "product_id": product_id,
+            "ages_years": [],
+            "prices_yen": [],
+            "prices_vnd": [],
+            "yen_to_vnd": yen_to_vnd,
+            "model_version": mv,
+            "baseline_fingerprint": fp,
+            "cache_key": build_cache_key(product_id or fp, mv, fp, grid, yen_to_vnd),
+            "disclaimer": cfg.get("disclaimer", ""),
+            "reference_year": ref_year,
+            "anchor_source": None,
+            "anchor_price_vnd": None,
+            "device_age_years_now": age_now,
+            "history_points": anchor_info.get("history_points", 0),
+        }
+
+    ages, vnd, yen_ml_raw = market_anchored_curve_vnd(
+        pred,
+        raw_row,
+        anchor_vnd=float(anchor_info["anchor_price_vnd"]),
+        age_now=age_now,
+        age_min=float(cfg.get("age_min", 0)),
+        age_max=float(cfg.get("age_max", 8)),
+        age_step=float(cfg.get("age_step", 1)),
+        reference_year=ref_year,
+        min_annual_dep_pct=float(cfg.get("min_annual_depreciation_pct", 8.0)),
+    )
+    fx = float(cfg.get("yen_to_vnd", yen_to_vnd))
+    prices_yen_chart = [round(float(p) / fx, 2) for p in vnd]
 
     return {
+        "status": "ok",
         "product_id": product_id,
         "ages_years": ages,
-        "prices_yen": yen,
         "prices_vnd": vnd,
+        "prices_yen": prices_yen_chart,
+        "prices_yen_ml_raw": yen_ml_raw,
         "yen_to_vnd": yen_to_vnd,
         "model_version": mv,
         "baseline_fingerprint": fp,
         "cache_key": build_cache_key(product_id or fp, mv, fp, grid, yen_to_vnd),
         "disclaimer": cfg.get("disclaimer", ""),
         "reference_year": ref_year,
+        "anchor_source": anchor_info["anchor_source"],
+        "anchor_price_vnd": round(float(anchor_info["anchor_price_vnd"]), 2),
+        "anchor_date": anchor_info.get("anchor_date"),
+        "device_age_years_now": age_now,
+        "history_points": anchor_info.get("history_points", 0),
+        "listing_count": anchor_info.get("listing_count", 0),
     }

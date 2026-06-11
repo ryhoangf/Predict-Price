@@ -3,20 +3,23 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 from typing import Any, Optional
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-import config as cfg
-
-
 @functools.lru_cache(maxsize=1)
 def get_mysql_engine() -> Engine:
+    host = os.getenv("MYSQL_HOST", "localhost")
+    port = os.getenv("MYSQL_PORT", "3306")
+    user = os.getenv("MYSQL_USER", "root")
+    password = os.getenv("MYSQL_PASSWORD", "")
+    database = os.getenv("MYSQL_DB", "ivaluate")
     uri = (
-        f"mysql+pymysql://{cfg.MYSQL_USER}:{cfg.MYSQL_PASSWORD}"
-        f"@{cfg.MYSQL_HOST}:{cfg.MYSQL_PORT}/{cfg.MYSQL_DB}"
+        f"mysql+pymysql://{user}:{password}"
+        f"@{host}:{port}/{database}"
     )
     return create_engine(uri, pool_pre_ping=True)
 

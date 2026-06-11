@@ -1,0 +1,81 @@
+name: Build and deploy ML API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "spark_apps/predictprice/api/**"
+      - "spark_apps/predictprice/ml_models/**"
+      - "spark_apps/predictprice/config/**"
+      - "spark_apps/predictprice/NLP/title_nlp.py"
+      - "Dockerfile.ml"
+      - "Dockerfile.ml.dockerignore"
+      - ".github/workflows/deploy-ml.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: production-ml
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/ivaluate-ml
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    env:
+      VPS_A_HOST: ${{ secrets.VPS_A_HOST }}
+      VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+      VPS_A_SSH_KEY: ${{ secrets.VPS_A_SSH_KEY }}
+      VPS_B_SSH_KEY: ${{ secrets.VPS_B_SSH_KEY }}
+      GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        if: env.VPS_A_HOST != '' && env.VPS_B_HOST != '' && env.VPS_A_SSH_KEY != '' && env.VPS_B_SSH_KEY != ''
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${VPS_B_SSH_KEY}" > ~/.ssh/vps_b
+          printf '%s\n' "${VPS_A_SSH_KEY}" > ~/.ssh/vps_a
+          chmod 600 ~/.ssh/vps_a ~/.ssh/vps_b
+          ssh-keyscan -H "${VPS_A_HOST}" "${VPS_B_HOST}" >> ~/.ssh/known_hosts
+      - name: Fetch production model
+        if: env.VPS_B_HOST != '' && env.VPS_B_SSH_KEY != ''
+        run: |
+          mkdir -p spark_apps/predictprice/models
+          scp -i ~/.ssh/vps_b \
+            root@"${VPS_B_HOST}":/root/Predict-Price/spark_apps/predictprice/models/smart_price_predictor.pkl \
+            spark_apps/predictprice/models/smart_price_predictor.pkl
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        if: env.VPS_B_HOST != '' && env.VPS_B_SSH_KEY != ''
+        with:
+          context: .
+          file: Dockerfile.ml
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+      - name: Deploy to K3s
+        if: env.VPS_A_HOST != '' && env.VPS_B_HOST != '' && env.VPS_A_SSH_KEY != '' && env.VPS_B_SSH_KEY != '' && env.GHCR_PULL_TOKEN != ''
+        run: |
+          ssh -i ~/.ssh/vps_a root@"${VPS_A_HOST}" "
+            kubectl -n ivaluate create secret docker-registry ghcr-pull \
+              --docker-server=ghcr.io \
+              --docker-username='${{ github.repository_owner }}' \
+              --docker-password='${GHCR_PULL_TOKEN}' \
+              --dry-run=client -o yaml | kubectl apply -f - &&
+            kubectl -n ivaluate patch serviceaccount default \
+              -p '{\"imagePullSecrets\":[{\"name\":\"ghcr-pull\"}]}' &&
+            kubectl -n ivaluate set image deployment/ivaluate-ml ml=${IMAGE}:${GITHUB_SHA} &&
+            kubectl -n ivaluate rollout status deployment/ivaluate-ml --timeout=240s
+          "

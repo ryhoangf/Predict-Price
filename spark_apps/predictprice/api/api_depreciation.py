@@ -232,12 +232,11 @@ def depreciation_curve(
     yen_to_vnd: float = Query(DEFAULT_YEN_TO_VND, gt=0, description="Quy đổi JPY→VND"),
 ) -> dict:
     """
-    Đường cong trượt giá theo tuổi máy (0–8 năm).
+    Đường cong trượt giá theo tuổi máy (0–8 năm), neo giá thị trường hôm nay.
 
     Cách gọi (chọn một):
-    - `?product_id=<uuid>` — đọc `products` + aggregate `active_listings`
-    - `?model_line=iPhone%2013&storage=128&ram=4` — thủ công (không cần MySQL)
-    - Kết hợp: `product_id` + ghi đè `model_line` / `storage` / `ram` nếu cần
+    - `?product_id=<uuid>` — đọc `products` + `price_history` / `active_listings`
+    - `?model_line=iPhone%2013&storage=128&ram=4` — thủ công (không có neo thị trường → insufficient_data)
     """
     try:
         cfg = load_curve_config()
@@ -251,6 +250,8 @@ def depreciation_curve(
     st_q = str(storage).strip()
     rm_q = str(ram).strip()
     product_meta: dict | None = None
+    history: list = []
+    listings_df = pd.DataFrame()
 
     if pid:
         try:
@@ -262,6 +263,7 @@ def depreciation_curve(
             raise HTTPException(status_code=404, detail=f"Không tìm thấy product_id={pid}")
         product["base_specs"] = parse_base_specs(product.get("base_specs"))
         try:
+            history = fetch_price_history(engine, pid)
             listings_df = fetch_listings_for_product(engine, pid)
             raw = build_product_baseline_row(product, listings_df)
         except Exception as e:
@@ -290,6 +292,8 @@ def depreciation_curve(
         out = compute_depreciation_curve_response(
             raw,
             product_id=pid or "anonymous",
+            history=history if pid else None,
+            listings_df=listings_df if pid else None,
             config=cfg,
             yen_to_vnd=yen_to_vnd,
         )
@@ -297,6 +301,8 @@ def depreciation_curve(
         eng = pred.engineer_features(pd.DataFrame([raw]))
         out["baseline"] = {
             "model_line": raw.get("model_line"),
+            "model_number": raw.get("model_number"),
+            "variant": raw.get("variant"),
             "storage": raw.get("storage"),
             "ram": raw.get("ram"),
             "release_year": int(eng.iloc[0]["release_year"]),
@@ -325,8 +331,7 @@ def price_forecast_30d(
     horizon_days: int = Query(0, ge=0, le=90, description="0 = dùng config mặc định (30)"),
 ) -> dict:
     """
-    Dự báo giá VND theo ngày (D+1 … D+horizon) cho một product.
-    Kết hợp price_history (xu hướng tuyến tính) và độ dốc mô hình ML khi lịch sử mỏng.
+    Dự báo giá VND theo ngày (D+1 … D+horizon) từ xu hướng price_history (≥14 ngày).
     """
     pid = product_id.strip()
     try:
