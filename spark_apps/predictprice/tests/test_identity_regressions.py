@@ -10,7 +10,11 @@ sys.path.insert(0, str(ROOT))
 
 from NLP.identity_quality import identity_quality_reason
 from NLP.product_matcher import ProductMatcher
-from NLP.title_nlp import NLP_IDENTITY_VERSION, PhoneInfoExtractor
+from NLP.title_nlp import (
+    NLP_IDENTITY_VERSION,
+    PhoneInfoExtractor,
+    product_identity_key_from_product_row,
+)
 from repair_generic_product_buckets import classify_listing
 
 
@@ -120,6 +124,17 @@ class IdentityRegressionTests(unittest.TestCase):
         )
         self.assertTrue(decision.accepted)
         self.assertEqual(decision.product_id, "canonical")
+
+    def test_catalog_identity_uses_brand_for_short_model_name(self):
+        key = product_identity_key_from_product_row(
+            {
+                "name": "A 3",
+                "brand": "OPPO",
+                "model_series": "A 3",
+                "base_specs": '{"storage": "128", "ram": null}',
+            }
+        )
+        self.assertEqual(key, "oppo|a 3|128|")
 
 
 if __name__ == "__main__":

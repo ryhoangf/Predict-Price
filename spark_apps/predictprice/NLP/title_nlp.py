@@ -681,9 +681,14 @@ def product_identity_key_from_product_row(product: dict[str, Any]) -> str | None
     """Identity key for existing MySQL products, including legacy model-only names."""
     specs = _parse_base_specs_dict(product.get("base_specs"))
     ext = _default_phone_extractor()
+    raw_name = str(product.get("name") or product.get("model_series") or "").strip()
+    raw_brand = str(product.get("brand") or "").strip()
+    parse_name = raw_name
+    if raw_brand and raw_name and not raw_name.lower().startswith(raw_brand.lower()):
+        parse_name = f"{raw_brand} {raw_name}"
     row = row_from_mongo_doc(
         {
-            "name": product.get("name") or product.get("model_series") or "",
+            "name": parse_name,
             "brand": product.get("brand"),
             "storage": specs.get("storage"),
             "ram": specs.get("ram"),
