@@ -55,6 +55,15 @@ def main() -> int:
             }
         ),
     )
+    unresolved = col.find(
+        {
+            "name": {"$regex": r"iPhone\s*13.*Pro", "$options": "i"},
+            "model_number": "13",
+        },
+        {"_id": 0, "name": 1, "source": 1},
+    ).limit(20)
+    for row in unresolved:
+        print(f"  unresolved sample: {row.get('source')} | {row.get('name')}")
     print("status counts:")
     for row in col.aggregate(
         [{"$group": {"_id": "$status", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}]
