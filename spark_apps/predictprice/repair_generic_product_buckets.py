@@ -7,6 +7,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import pymongo
 from sqlalchemy import bindparam, create_engine, text
@@ -50,6 +51,32 @@ _EXPLICIT_MODEL_RE = re.compile(
     r"([^\r\n|]{3,100})",
     re.IGNORECASE,
 )
+_ITEM_ID_RE = re.compile(r"(?:^|/)(m\d{6,})(?:$|[/?#])", re.IGNORECASE)
+
+
+def _link_lookup_keys(url: Any) -> set[str]:
+    raw = unquote(str(url or "").strip()).split("#")[0]
+    if not raw:
+        return set()
+    no_query = raw.split("?")[0].rstrip("/")
+    normalized = no_query.replace("http://", "https://", 1)
+    keys = {raw, no_query, normalized}
+    try:
+        parsed = urlparse(normalized)
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = (parsed.path or "").rstrip("/")
+        if path:
+            keys.add(path.lower())
+            keys.add(f"https://{host}{path.lower()}")
+    except Exception:
+        pass
+    match = _ITEM_ID_RE.search(normalized)
+    if match:
+        item_id = match.group(1).lower()
+        keys.update({item_id, f"/mercari/item/{item_id}", f"https://buyee.jp/mercari/item/{item_id}"})
+    return {key for key in keys if key}
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:
@@ -177,24 +204,28 @@ def classify_listing(
 
 
 def _load_raw_docs(listings: list[dict[str, Any]], batch_size: int = 2000) -> dict[str, dict[str, Any]]:
-    urls = list(dict.fromkeys(str(row.get("source_url") or "") for row in listings))
-    urls = [url for url in urls if url]
     client = pymongo.MongoClient(cfg.MONGO_URI)
     col = client[cfg.DB_NAME][cfg.COLLECTION_NAME]
-    docs: dict[str, dict[str, Any]] = {}
+    lookup: dict[str, dict[str, Any]] = {}
     try:
-        for index in range(0, len(urls), batch_size):
-            chunk = urls[index : index + batch_size]
-            cursor = col.find(
-                {"link": {"$in": chunk}},
-                {"link": 1, "name": 1, "explanation": 1, "description": 1},
-            )
-            for doc in cursor:
-                link = str(doc.get("link") or "")
-                if link:
-                    docs[link] = doc
+        cursor = col.find(
+            {"link": {"$exists": True, "$ne": None}},
+            {"link": 1, "name": 1, "explanation": 1, "description": 1},
+            batch_size=batch_size,
+        )
+        for doc in cursor:
+            for key in _link_lookup_keys(doc.get("link")):
+                lookup.setdefault(key, doc)
     finally:
         client.close()
+
+    docs: dict[str, dict[str, Any]] = {}
+    for listing in listings:
+        source_url = str(listing.get("source_url") or "")
+        for key in _link_lookup_keys(source_url):
+            if key in lookup:
+                docs[source_url] = lookup[key]
+                break
     return docs
 
 
@@ -447,6 +478,12 @@ def _print_plan(actions: list[dict[str, Any]]) -> None:
     print("Planned listing actions:")
     for key, value in sorted(summary.items()):
         print(f"  {key}: {value}")
+    print(
+        f"  identity_changed: {sum(bool(item.get('identity_changed')) for item in actions)}"
+    )
+    print(
+        f"  identity_unchanged: {sum(not bool(item.get('identity_changed')) for item in actions)}"
+    )
 
     print("\nTop target/review buckets:")
     for key, value in sorted(by_target.items(), key=lambda x: x[1], reverse=True)[:20]:
@@ -502,6 +539,18 @@ def main() -> int:
                 "canonical": canonical,
                 "confidence": confidence,
                 "review_name": review_name,
+                "identity_changed": (
+                    canonical is None
+                    or canonical.get("product_identity_key")
+                    != product_identity_key_from_product_row(
+                        {
+                            "name": listing.get("product_name"),
+                            "brand": listing.get("product_brand"),
+                            "model_series": listing.get("product_model_series"),
+                            "base_specs": listing.get("product_specs"),
+                        }
+                    )
+                ),
             }
         )
 
