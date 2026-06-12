@@ -232,7 +232,22 @@ def _load_raw_docs(listings: list[dict[str, Any]], batch_size: int = 2000) -> di
     try:
         cursor = col.find(
             {"link": {"$exists": True, "$ne": None}},
-            {"link": 1, "name": 1, "explanation": 1, "description": 1},
+            {
+                "link": 1,
+                "name": 1,
+                "explanation": 1,
+                "description": 1,
+                "brand": 1,
+                "model_line": 1,
+                "model_number": 1,
+                "variant": 1,
+                "capacity": 1,
+                "storage": 1,
+                "ram": 1,
+                "status": 1,
+                "is_junk": 1,
+                "nlp_identity_version": 1,
+            },
             batch_size=batch_size,
         )
         for doc in cursor:

@@ -16,6 +16,7 @@ from NLP.title_nlp import (
     product_identity_key_from_product_row,
 )
 from repair_generic_product_buckets import classify_listing
+from repair_review_legacy_catalog import _canonical_from_nlp_doc
 
 
 class IdentityRegressionTests(unittest.TestCase):
@@ -161,6 +162,59 @@ class IdentityRegressionTests(unittest.TestCase):
                     "base_specs": listing["product_specs"],
                 }
             ),
+        )
+
+    def test_review_recovery_uses_current_nlp_fields(self):
+        canonical = _canonical_from_nlp_doc(
+            {
+                "name": "P129 SIM-free iPhone13 Pro Max 128GB",
+                "brand": "Apple",
+                "model_line": "iPhone",
+                "model_number": "13 Pro Max",
+                "variant": "Pro Max",
+                "storage": "128GB",
+                "ram": None,
+                "is_junk": False,
+                "nlp_identity_version": NLP_IDENTITY_VERSION,
+            }
+        )
+        self.assertIsNotNone(canonical)
+        self.assertEqual(canonical["name"], "iPhone 13 Pro Max")
+        self.assertEqual(
+            canonical["product_identity_key"],
+            "apple|iphone 13 pro max|128|",
+        )
+
+    def test_review_recovery_rejects_mixed_model_title(self):
+        canonical = _canonical_from_nlp_doc(
+            {
+                "name": "Motorola Moto G53 iPhone bundle",
+                "brand": "Motorola",
+                "model_line": "Moto",
+                "model_number": "G53",
+                "storage": "128GB",
+                "is_junk": False,
+                "nlp_identity_version": NLP_IDENTITY_VERSION,
+            }
+        )
+        self.assertIsNone(canonical)
+
+    def test_review_recovery_prefers_explicit_title_storage(self):
+        canonical = _canonical_from_nlp_doc(
+            {
+                "name": "iPhone 12 Pro 128GB graphite",
+                "brand": "Apple",
+                "model_line": "iPhone",
+                "model_number": "12 Pro",
+                "variant": "Pro",
+                "storage": "256GB",
+                "is_junk": False,
+                "nlp_identity_version": NLP_IDENTITY_VERSION,
+            }
+        )
+        self.assertEqual(
+            canonical["product_identity_key"],
+            "apple|iphone 12 pro|128|",
         )
 
 
