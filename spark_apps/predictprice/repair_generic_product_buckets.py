@@ -522,6 +522,22 @@ def _print_plan(actions: list[dict[str, Any]]) -> None:
             f"| {listing.get('source_url')}"
         )
 
+    changed_migrations = [
+        item
+        for item in actions
+        if item.get("identity_changed") and str(item.get("action") or "").startswith("migrate")
+    ]
+    print("\nChanged migration samples:")
+    for item in changed_migrations[:40]:
+        listing = item["listing"]
+        canonical = item.get("canonical") or {}
+        print(
+            f"{item['action']} | {listing.get('product_brand')} / {listing.get('product_name')} "
+            f"/ {listing.get('product_specs')} -> {canonical.get('brand')} / "
+            f"{canonical.get('name')} / {canonical.get('base_specs')} "
+            f"| {listing.get('source_url')}"
+        )
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Listing-level repair for generic/cross-brand legacy product buckets.")
