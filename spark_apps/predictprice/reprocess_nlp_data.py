@@ -19,8 +19,10 @@ Lưu ý: etl.py bỏ qua URL đã có trong active_listings — phải --mysql-c
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pandas as pd
 import pymongo
@@ -68,6 +70,32 @@ MYSQL_URI = (
     f"mysql+pymysql://{cfg.MYSQL_USER}:{cfg.MYSQL_PASSWORD}"
     f"@{cfg.MYSQL_HOST}:{cfg.MYSQL_PORT}/{cfg.MYSQL_DB}"
 )
+_MERCARI_ITEM_RE = re.compile(r"(?:^|/)(m\d{6,})(?:$|[/?#])", re.IGNORECASE)
+
+
+def _link_lookup_keys(url: object) -> set[str]:
+    raw = unquote(str(url or "").strip()).split("#")[0]
+    if not raw:
+        return set()
+    no_query = raw.split("?")[0].rstrip("/")
+    normalized = no_query.replace("http://", "https://", 1)
+    keys = {raw, no_query, normalized}
+    try:
+        parsed = urlparse(normalized)
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = (parsed.path or "").rstrip("/")
+        if path:
+            keys.add(path.lower())
+            keys.add(f"https://{host}{path.lower()}")
+    except Exception:
+        pass
+    match = _MERCARI_ITEM_RE.search(normalized)
+    if match:
+        item_id = match.group(1).lower()
+        keys.update({item_id, f"/mercari/item/{item_id}", f"https://buyee.jp/mercari/item/{item_id}"})
+    return {key for key in keys if key}
 
 
 def _collection(uri: str | None = None):
@@ -222,6 +250,20 @@ def mongo_sync_already_in_mysql(
 
     client, col = _collection()
     pending_before = count_mongo(col, ETL_MONGO_QUERY)
+    mysql_keys: set[str] = set()
+    for url in urls:
+        mysql_keys.update(_link_lookup_keys(url))
+
+    matched_ids = []
+    for doc in col.find(
+        {"link": {"$exists": True, "$ne": None}},
+        {"_id": 1, "link": 1},
+        batch_size=batch_size,
+    ):
+        if _link_lookup_keys(doc.get("link")) & mysql_keys:
+            matched_ids.append(doc["_id"])
+
+    print(f"Mongo URLs matched to active_listings: {len(matched_ids)}/{len(urls)}")
     updated_total = 0
 
     if dry_run:
@@ -242,10 +284,10 @@ def mongo_sync_already_in_mysql(
     if not preserve_dates:
         sync_set["processed_at"] = datetime.now()
 
-    for i in range(0, len(urls), batch_size):
-        chunk = urls[i : i + batch_size]
+    for i in range(0, len(matched_ids), batch_size):
+        chunk = matched_ids[i : i + batch_size]
         res = col.update_many(
-            {"link": {"$in": chunk}},
+            {"_id": {"$in": chunk}},
             {"$set": sync_set},
         )
         updated_total += res.modified_count
