@@ -34,6 +34,7 @@ if str(_ROOT) not in sys.path:
 
 import config as cfg
 from NLP.title_nlp import NLP_IDENTITY_VERSION
+from NLP.title_nlp import PhoneInfoExtractor
 from scrapers.nlp_pipeline import run_nlp_pipeline
 
 # Trùng etl.extract query (sau khi đã sửa NLP trên Mongo)
@@ -66,6 +67,7 @@ RENLP_ALL_QUERY = {
 }
 
 BATCH = 500
+_IDENTITY_EXTRACTOR: PhoneInfoExtractor | None = None
 MYSQL_URI = (
     f"mysql+pymysql://{cfg.MYSQL_USER}:{cfg.MYSQL_PASSWORD}"
     f"@{cfg.MYSQL_HOST}:{cfg.MYSQL_PORT}/{cfg.MYSQL_DB}"
@@ -140,6 +142,7 @@ def mongo_renlp(
     query: dict | None = None,
     *,
     preserve_dates: bool = False,
+    identity_only: bool = False,
 ) -> int:
     """Chạy lại Layer-2 NLP trên Mongo (không cần Spark)."""
     client, col = _collection()
@@ -160,18 +163,34 @@ def mongo_renlp(
         if len(batch_docs) < batch_size:
             continue
 
-        processed += _renlp_batch(col, batch_docs, preserve_dates=preserve_dates)
+        processed += _renlp_batch(
+            col,
+            batch_docs,
+            preserve_dates=preserve_dates,
+            identity_only=identity_only,
+        )
         batch_docs = []
 
     if batch_docs:
-        processed += _renlp_batch(col, batch_docs, preserve_dates=preserve_dates)
+        processed += _renlp_batch(
+            col,
+            batch_docs,
+            preserve_dates=preserve_dates,
+            identity_only=identity_only,
+        )
 
     client.close()
     print(f"Mongo re-NLP: đã cập nhật ~{processed} doc(s) (theo bulk_write modified_count).")
     return processed
 
 
-def _renlp_batch(col, docs: list[dict], *, preserve_dates: bool = False) -> int:
+def _renlp_batch(
+    col,
+    docs: list[dict],
+    *,
+    preserve_dates: bool = False,
+    identity_only: bool = False,
+) -> int:
     df = pd.DataFrame(docs)
     if "_id" in df.columns:
         df = df.drop(columns=["_id"])
@@ -185,7 +204,13 @@ def _renlp_batch(col, docs: list[dict], *, preserve_dates: bool = False) -> int:
 
     for source_name, grp in df.groupby("source", dropna=False):
         src = str(source_name) if pd.notna(source_name) else "unknown"
-        sub = run_nlp_pipeline(grp.copy(), src)
+        if identity_only:
+            global _IDENTITY_EXTRACTOR
+            if _IDENTITY_EXTRACTOR is None:
+                _IDENTITY_EXTRACTOR = PhoneInfoExtractor()
+            sub = _IDENTITY_EXTRACTOR.process_dataframe(grp.copy(), title_column="name")
+        else:
+            sub = run_nlp_pipeline(grp.copy(), src)
         stats = apply_nlp_batch(
             src,
             sub,
@@ -385,6 +410,11 @@ def main() -> None:
         action="store_true",
         help="Re-NLP toàn bộ raw_items không phải junk (không chỉ loaded_mysql/layer2)",
     )
+    parser.add_argument(
+        "--identity-only",
+        action="store_true",
+        help="Chỉ chạy lại title identity NLP; giữ nguyên item explanation và junk result",
+    )
     args = parser.parse_args()
 
     if args.status:
@@ -422,13 +452,30 @@ def main() -> None:
     preserve = args.preserve_dates
 
     if args.mongo_renlp:
-        mongo_renlp(dry, args.batch_size, preserve_dates=preserve)
+        mongo_renlp(
+            dry,
+            args.batch_size,
+            preserve_dates=preserve,
+            identity_only=args.identity_only,
+        )
 
     if args.mongo_renlp_all:
-        mongo_renlp(dry, args.batch_size, query=RENLP_ALL_QUERY, preserve_dates=preserve)
+        mongo_renlp(
+            dry,
+            args.batch_size,
+            query=RENLP_ALL_QUERY,
+            preserve_dates=preserve,
+            identity_only=args.identity_only,
+        )
 
     if args.mongo_renlp_loaded_only:
-        mongo_renlp(dry, args.batch_size, query=RENLP_LOADED_QUERY, preserve_dates=preserve)
+        mongo_renlp(
+            dry,
+            args.batch_size,
+            query=RENLP_LOADED_QUERY,
+            preserve_dates=preserve,
+            identity_only=args.identity_only,
+        )
 
     if args.mongo_etl_ready:
         mongo_prepare_etl(dry)

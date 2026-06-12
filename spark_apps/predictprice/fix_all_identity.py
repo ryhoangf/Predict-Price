@@ -54,6 +54,7 @@ def main() -> int:
             "reprocess_nlp_data.py",
             "--mongo-renlp-all",
             "--preserve-dates",
+            "--identity-only",
             "--batch-size",
             str(args.batch_size),
         ]
