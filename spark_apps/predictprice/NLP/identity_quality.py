@@ -8,7 +8,7 @@ import pandas as pd
 
 
 BAD_AMBIGUOUS_STORAGE_GB = {"0", "1", "4", "8", "12"}
-GENERIC_STORAGE_RE = re.compile(r"^\s*[A-Za-z]+\s+(?:\d+\s*(?:GB|TB)|\d+)\s*$", re.IGNORECASE)
+GENERIC_STORAGE_RE = re.compile(r"^\s*[A-Za-z]+\s+\d+\s*(?:GB|TB)\s*$", re.IGNORECASE)
 HIGH_END_1TB_TOKENS = {"pro", "ultra", "max", "fold"}
 GENERIC_MODEL_NAMES = {
     "android",
@@ -135,8 +135,13 @@ def is_suspicious_future_or_unknown_model(row: dict[str, Any]) -> bool:
 
 
 def identity_quality_reason(row: dict[str, Any]) -> str | None:
-    text_value = compact_identity_text(row.get("name_raw"), row.get("description"))
-    if is_mixed_model_text(text_value):
+    title_text = compact_identity_text(row.get("name_raw"), row.get("name"))
+    title_families = model_family_hits(title_text)
+    description_text = compact_identity_text(row.get("description"))
+    text_value = title_text or description_text
+    if len(title_families) >= 2:
+        return "mixed_model_families"
+    if not title_families and is_mixed_model_text(description_text):
         return "mixed_model_families"
 
     if is_generic_identity_row(row):

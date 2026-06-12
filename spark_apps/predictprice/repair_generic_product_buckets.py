@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
+import pymongo
 from sqlalchemy import bindparam, create_engine, text
 
 ROOT = Path(__file__).resolve().parent
@@ -18,8 +20,10 @@ from NLP.identity_quality import (
     compact_identity_text,
     identity_quality_reason,
     is_mixed_model_text,
+    model_family_hits,
     present,
 )
+from NLP.product_matcher import product_candidate_priority
 from NLP.title_nlp import (
     PhoneInfoExtractor,
     build_base_specs,
@@ -41,6 +45,11 @@ MIXED_REVIEW_NAME = "Needs Review - Mixed Smartphone Bundle"
 UNCLEAR_REVIEW_NAME = "Needs Review - Unclear Product Identity"
 REVIEW_SPECS = json.dumps({"storage": None, "ram": None})
 BAD_STORAGE_VALUES = ("0", "1", "4", "8", "12", "1TB")
+_EXPLICIT_MODEL_RE = re.compile(
+    r"(?:機種名|商品名|モデル名|model\s*name|product\s*name)\s*[:：]\s*"
+    r"([^\r\n|]{3,100})",
+    re.IGNORECASE,
+)
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:
@@ -93,23 +102,65 @@ def _confidence(canonical: dict[str, Any] | None) -> float:
     return 0.96 if specs.get("storage") else 0.90
 
 
-def _source_text(listing: dict[str, Any]) -> str:
-    description = compact_identity_text(listing.get("description"))
-    if len(description) >= 8:
-        return description
-    return compact_identity_text(listing.get("product_name"))
+def _explicit_model_text(description: Any) -> str:
+    text_value = str(description or "")
+    match = _EXPLICIT_MODEL_RE.search(text_value)
+    return compact_identity_text(match.group(1), limit=140) if match else ""
+
+
+def _same_model_generation(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if str(left.get("model_line") or "").lower() != str(right.get("model_line") or "").lower():
+        return False
+    left_number = re.match(r"\d{1,3}|[a-z]+", str(left.get("model_number") or "").lower())
+    right_number = re.match(r"\d{1,3}|[a-z]+", str(right.get("model_number") or "").lower())
+    return bool(left_number and right_number and left_number.group(0) == right_number.group(0))
+
+
+def _identity_source(
+    listing: dict[str, Any],
+    raw_doc: dict[str, Any] | None,
+    extractor: PhoneInfoExtractor,
+) -> tuple[str, str]:
+    title = compact_identity_text((raw_doc or {}).get("name"), limit=300)
+    if not title:
+        title = compact_identity_text(listing.get("product_name"), limit=300)
+    title_canonical = _canonical_from_text(title, extractor) if title else None
+
+    description = (
+        (raw_doc or {}).get("explanation")
+        or (raw_doc or {}).get("description")
+        or listing.get("description")
+    )
+    explicit_text = _explicit_model_text(description)
+    explicit_canonical = _canonical_from_text(explicit_text, extractor) if explicit_text else None
+
+    if (
+        title_canonical
+        and explicit_canonical
+        and not title_canonical.get("quality_reason")
+        and not explicit_canonical.get("quality_reason")
+        and _same_model_generation(title_canonical, explicit_canonical)
+        and len(str(explicit_canonical.get("name") or "").split())
+        > len(str(title_canonical.get("name") or "").split())
+    ):
+        return explicit_text, "explicit_description_model"
+
+    if not title_canonical and explicit_canonical:
+        return explicit_text, "explicit_description_fallback"
+    return title, "raw_title"
 
 
 def classify_listing(
     listing: dict[str, Any],
     extractor: PhoneInfoExtractor,
+    raw_doc: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any] | None, float]:
-    source_text = _source_text(listing)
+    source_text, source_kind = _identity_source(listing, raw_doc, extractor)
     if not source_text:
         return "quarantine_unclear_identity", None, 0.0
 
     canonical = _canonical_from_text(source_text, extractor)
-    if is_mixed_model_text(source_text):
+    if len(model_family_hits(source_text)) >= 2 or is_mixed_model_text(source_text):
         return "quarantine_mixed_bundle", canonical, 0.0
     if not canonical:
         return "quarantine_unclear_identity", None, 0.0
@@ -120,9 +171,31 @@ def classify_listing(
     new_brand = str(canonical.get("brand") or "").strip().lower()
     if old_brand and new_brand and old_brand != new_brand:
         # Cross-brand legacy products are exactly what we want to repair.
-        return "migrate_cross_brand_repair", canonical, _confidence(canonical)
+        return f"migrate_cross_brand_repair_{source_kind}", canonical, _confidence(canonical)
 
-    return "migrate_generic_bucket_repair", canonical, _confidence(canonical)
+    return f"migrate_generic_bucket_repair_{source_kind}", canonical, _confidence(canonical)
+
+
+def _load_raw_docs(listings: list[dict[str, Any]], batch_size: int = 2000) -> dict[str, dict[str, Any]]:
+    urls = list(dict.fromkeys(str(row.get("source_url") or "") for row in listings))
+    urls = [url for url in urls if url]
+    client = pymongo.MongoClient(cfg.MONGO_URI)
+    col = client[cfg.DB_NAME][cfg.COLLECTION_NAME]
+    docs: dict[str, dict[str, Any]] = {}
+    try:
+        for index in range(0, len(urls), batch_size):
+            chunk = urls[index : index + batch_size]
+            cursor = col.find(
+                {"link": {"$in": chunk}},
+                {"link": 1, "name": 1, "explanation": 1, "description": 1},
+            )
+            for doc in cursor:
+                link = str(doc.get("link") or "")
+                if link:
+                    docs[link] = doc
+    finally:
+        client.close()
+    return docs
 
 
 def _ensure_tables(conn) -> None:
@@ -196,23 +269,26 @@ def _load_target_products(conn, source_ids: set[str]) -> dict[str, str]:
     rows = conn.execute(
         text(
             """
-            SELECT product_id, name, brand, model_series, category, base_specs
-            FROM products
-            WHERE COALESCE(category, '') <> 'Review'
-              AND COALESCE(brand, '') <> 'Needs Review'
+            SELECT p.product_id, p.name, p.brand, p.model_series, p.category, p.base_specs,
+                   COUNT(l.listing_id) AS listing_count
+            FROM products p
+            LEFT JOIN active_listings l ON l.product_id = p.product_id
+            WHERE COALESCE(p.category, '') <> 'Review'
+              AND COALESCE(p.brand, '') <> 'Needs Review'
+            GROUP BY p.product_id, p.name, p.brand, p.model_series, p.category, p.base_specs
             """
         )
     ).mappings()
-    targets: dict[str, str] = {}
+    selected: dict[str, dict[str, Any]] = {}
     for row in rows:
         product = dict(row)
-        if product["product_id"] in source_ids:
-            continue
         key = product_identity_key_from_product_row(product)
         if not key:
             continue
-        targets.setdefault(key, product["product_id"])
-    return targets
+        current = selected.get(key)
+        if current is None or product_candidate_priority(product) > product_candidate_priority(current):
+            selected[key] = product
+    return {key: str(product["product_id"]) for key, product in selected.items()}
 
 
 def _ensure_product(conn, canonical: dict[str, Any], targets: dict[str, str]) -> str:
@@ -332,7 +408,7 @@ def _select_listings(conn, args: argparse.Namespace) -> list[dict[str, Any]]:
         )
         params["bad_storage_values"] = list(BAD_STORAGE_VALUES)
 
-    if not clauses:
+    if not clauses and not args.all_products:
         raise SystemExit("Provide --keyword, --product-id, or --bad-storage.")
 
     sql = text(
@@ -343,7 +419,7 @@ def _select_listings(conn, args: argparse.Namespace) -> list[dict[str, Any]]:
                p.model_series AS product_model_series, p.base_specs AS product_specs
         FROM active_listings l
         JOIN products p ON p.product_id = l.product_id
-        WHERE {' OR '.join(clauses)}
+        WHERE {(' OR '.join(clauses)) if clauses else '1=1'}
           AND COALESCE(p.category, '') <> 'Review'
         ORDER BY p.name, l.last_updated, l.listing_id
         """
@@ -392,6 +468,7 @@ def main() -> int:
     parser.add_argument("--keyword")
     parser.add_argument("--product-id")
     parser.add_argument("--bad-storage", action="store_true")
+    parser.add_argument("--all-products", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
@@ -406,9 +483,13 @@ def main() -> int:
     with engine.connect() as conn:
         listings = _select_listings(conn, args)
 
+    raw_docs = _load_raw_docs(listings)
+    print(f"Mongo raw documents matched by source_url: {len(raw_docs)}/{len(listings)}")
+
     actions: list[dict[str, Any]] = []
     for listing in listings:
-        action, canonical, confidence = classify_listing(listing, extractor)
+        raw_doc = raw_docs.get(str(listing.get("source_url") or ""))
+        action, canonical, confidence = classify_listing(listing, extractor, raw_doc)
         review_name = None
         if action.startswith("quarantine_mixed"):
             review_name = MIXED_REVIEW_NAME

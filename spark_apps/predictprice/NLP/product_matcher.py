@@ -17,6 +17,10 @@ ACCEPT_EXISTING_THRESHOLD = 0.78
 ACCEPT_NEW_THRESHOLD = 0.88
 _MODEL_DIR = Path(__file__).resolve().parent / "models"
 _PRODUCT_MATCH_MODEL = _MODEL_DIR / "lgbm_product_match_v1.txt"
+_SPEC_IN_PRODUCT_NAME_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:gb|tb)\b|\b\d+\s*gb\s*ram\b",
+    re.IGNORECASE,
+)
 
 
 def _present(value: Any) -> bool:
@@ -81,6 +85,16 @@ def _ram_from_base_specs(raw: Any) -> str:
     return _norm_text(specs.get("ram"))
 
 
+def product_candidate_priority(row: dict[str, Any]) -> tuple[int, int]:
+    name = str(row.get("name") or "")
+    clean_model_name = int(not _SPEC_IN_PRODUCT_NAME_RE.search(name))
+    try:
+        listing_count = int(row.get("listing_count") or 0)
+    except (TypeError, ValueError):
+        listing_count = 0
+    return clean_model_name, listing_count
+
+
 @dataclass
 class MatchDecision:
     accepted: bool
@@ -107,16 +121,21 @@ class ProductMatcher:
         self._lgbm_model = self._load_optional_lgbm()
 
         if not self.products_df.empty:
-            records = []
+            selected_by_key: dict[str, dict[str, Any]] = {}
             for _, row in self.products_df.iterrows():
                 rec = row.to_dict()
                 rec["product_identity_key"] = product_identity_key_from_product_row(rec)
                 rec["match_text"] = _product_text(rec)
-                records.append(rec)
                 key = rec.get("product_identity_key")
-                if key and key not in self.key_to_product:
-                    self.key_to_product[key] = rec
-            self.products_df = pd.DataFrame(records)
+                if not key:
+                    continue
+                current = selected_by_key.get(key)
+                if current is None or product_candidate_priority(rec) > product_candidate_priority(
+                    current
+                ):
+                    selected_by_key[key] = rec
+            self.key_to_product = selected_by_key
+            self.products_df = pd.DataFrame(selected_by_key.values())
             self._fit_tfidf()
 
     def _load_optional_lgbm(self):

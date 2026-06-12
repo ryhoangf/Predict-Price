@@ -338,6 +338,8 @@ def apply_nlp_batch(
     source_name: str,
     df: pd.DataFrame,
     custom_mongo_uri=None,
+    *,
+    preserve_timestamps: bool = False,
 ) -> dict:
     """Write NLP-enriched fields back to Mongo; mark nlp_done + extracted_layer2."""
     out: dict = {
@@ -357,6 +359,8 @@ def apply_nlp_batch(
     out["rows_in_batch"] = len(df)
     now = datetime.now(timezone.utc)
     preserve = frozenset({"_id", "link", "source", "ingested_at"})
+    if preserve_timestamps:
+        preserve = preserve | frozenset({"nlp_at", "processed_at", "processed", "status"})
     df = df.where(pd.notna(df), None)
 
     with get_mongo_connection(custom_mongo_uri) as col:
@@ -379,10 +383,20 @@ def apply_nlp_batch(
                 k: sanitize_mongo_value(v)
                 for k, v in row.items()
                 if k not in preserve
+                and not (
+                    preserve_timestamps
+                    and (
+                        str(k).lower() == "date"
+                        or str(k).lower().endswith("_at")
+                        or str(k).lower().endswith("_date")
+                        or "timestamp" in str(k).lower()
+                    )
+                )
             }
-            payload["status"] = STATUS_LAYER2
             payload["nlp_done"] = True
-            payload["nlp_at"] = now
+            if not preserve_timestamps:
+                payload["status"] = STATUS_LAYER2
+                payload["nlp_at"] = now
             ops.append(
                 UpdateOne(
                     {"link": link, "source": source_name},

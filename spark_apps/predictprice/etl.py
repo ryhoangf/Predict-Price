@@ -398,6 +398,7 @@ def sync_products_master(df: pd.DataFrame, engine):
     """
     Sync products master table
     """
+    from NLP.product_matcher import product_candidate_priority
     from NLP.title_nlp import product_identity_key_from_product_row
 
     unique_products = df[
@@ -412,20 +413,37 @@ def sync_products_master(df: pd.DataFrame, engine):
 
     with engine.connect() as conn:
         existing_db = pd.read_sql(
-            "SELECT product_id, name, brand, model_series, base_specs FROM products",
+            """
+            SELECT
+                p.product_id,
+                p.name,
+                p.brand,
+                p.model_series,
+                p.base_specs,
+                COUNT(l.listing_id) AS listing_count
+            FROM products p
+            LEFT JOIN active_listings l ON l.product_id = p.product_id
+            GROUP BY p.product_id, p.name, p.brand, p.model_series, p.base_specs
+            """,
             conn,
         )
     
     product_map = {}
+    selected_products = {}
     duplicate_existing_keys = 0
     for _, existing in existing_db.iterrows():
-        product_key = product_identity_key_from_product_row(existing.to_dict())
+        existing_record = existing.to_dict()
+        product_key = product_identity_key_from_product_row(existing_record)
         if not product_key:
             continue
         if product_key in product_map:
             duplicate_existing_keys += 1
-            continue
-        product_map[product_key] = existing['product_id']
+            if product_candidate_priority(existing_record) <= product_candidate_priority(
+                selected_products[product_key]
+            ):
+                continue
+        product_map[product_key] = existing_record['product_id']
+        selected_products[product_key] = existing_record
 
     if duplicate_existing_keys:
         print(
@@ -876,7 +894,18 @@ def load_existing_products(engine) -> pd.DataFrame:
     try:
         with engine.connect() as conn:
             return pd.read_sql(
-                "SELECT product_id, name, brand, model_series, base_specs FROM products",
+                """
+                SELECT
+                    p.product_id,
+                    p.name,
+                    p.brand,
+                    p.model_series,
+                    p.base_specs,
+                    COUNT(l.listing_id) AS listing_count
+                FROM products p
+                LEFT JOIN active_listings l ON l.product_id = p.product_id
+                GROUP BY p.product_id, p.name, p.brand, p.model_series, p.base_specs
+                """,
                 conn,
             )
     except Exception as exc:

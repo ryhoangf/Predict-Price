@@ -31,6 +31,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import config as cfg
+from NLP.title_nlp import NLP_IDENTITY_VERSION
 from scrapers.nlp_pipeline import run_nlp_pipeline
 
 # Trùng etl.extract query (sau khi đã sửa NLP trên Mongo)
@@ -54,6 +55,12 @@ RENLP_LOADED_QUERY = {
     "status": "loaded_mysql",
     "is_junk": {"$ne": True},
     "link": {"$exists": True, "$ne": None},
+}
+
+RENLP_ALL_QUERY = {
+    "is_junk": {"$ne": True},
+    "link": {"$exists": True, "$ne": None},
+    "nlp_identity_version": {"$ne": NLP_IDENTITY_VERSION},
 }
 
 BATCH = 500
@@ -99,7 +106,13 @@ def preview_standard_names(col, limit: int = 8) -> None:
     print(df_t[cols].head(limit).to_string(index=False))
 
 
-def mongo_renlp(dry_run: bool, batch_size: int, query: dict | None = None) -> int:
+def mongo_renlp(
+    dry_run: bool,
+    batch_size: int,
+    query: dict | None = None,
+    *,
+    preserve_dates: bool = False,
+) -> int:
     """Chạy lại Layer-2 NLP trên Mongo (không cần Spark)."""
     client, col = _collection()
     renlp_query = query or RENLP_QUERY
@@ -119,18 +132,18 @@ def mongo_renlp(dry_run: bool, batch_size: int, query: dict | None = None) -> in
         if len(batch_docs) < batch_size:
             continue
 
-        processed += _renlp_batch(col, batch_docs)
+        processed += _renlp_batch(col, batch_docs, preserve_dates=preserve_dates)
         batch_docs = []
 
     if batch_docs:
-        processed += _renlp_batch(col, batch_docs)
+        processed += _renlp_batch(col, batch_docs, preserve_dates=preserve_dates)
 
     client.close()
     print(f"Mongo re-NLP: đã cập nhật ~{processed} doc(s) (theo bulk_write modified_count).")
     return processed
 
 
-def _renlp_batch(col, docs: list[dict]) -> int:
+def _renlp_batch(col, docs: list[dict], *, preserve_dates: bool = False) -> int:
     df = pd.DataFrame(docs)
     if "_id" in df.columns:
         df = df.drop(columns=["_id"])
@@ -145,7 +158,12 @@ def _renlp_batch(col, docs: list[dict]) -> int:
     for source_name, grp in df.groupby("source", dropna=False):
         src = str(source_name) if pd.notna(source_name) else "unknown"
         sub = run_nlp_pipeline(grp.copy(), src)
-        stats = apply_nlp_batch(src, sub, cfg.MONGO_URI)
+        stats = apply_nlp_batch(
+            src,
+            sub,
+            cfg.MONGO_URI,
+            preserve_timestamps=preserve_dates,
+        )
         updated += int(stats.get("updated") or 0)
         print(f"  source={src}: rows={len(sub)} updated={stats.get('updated')} stage={stats.get('stage')}")
 
@@ -180,7 +198,12 @@ def mongo_prepare_etl(dry_run: bool) -> int:
     return result.modified_count
 
 
-def mongo_sync_already_in_mysql(dry_run: bool, batch_size: int = 5000) -> int:
+def mongo_sync_already_in_mysql(
+    dry_run: bool,
+    batch_size: int = 5000,
+    *,
+    preserve_dates: bool = False,
+) -> int:
     """
     Doc đã có active_listings (theo source_url) → processed=true, status=loaded_mysql.
     Giải quyết hàng chục nghìn processed=false sau --mongo-etl-ready.
@@ -215,17 +238,15 @@ def mongo_sync_already_in_mysql(dry_run: bool, batch_size: int = 5000) -> int:
 
     from datetime import datetime
 
+    sync_set = {"processed": True, "status": "loaded_mysql"}
+    if not preserve_dates:
+        sync_set["processed_at"] = datetime.now()
+
     for i in range(0, len(urls), batch_size):
         chunk = urls[i : i + batch_size]
         res = col.update_many(
             {"link": {"$in": chunk}},
-            {
-                "$set": {
-                    "processed": True,
-                    "status": "loaded_mysql",
-                    "processed_at": datetime.now(),
-                }
-            },
+            {"$set": sync_set},
         )
         updated_total += res.modified_count
         print(f"  batch {i // batch_size + 1}: modified={res.modified_count}")
@@ -312,6 +333,16 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="mongo-renlp + mongo-etl-ready + mysql-clear")
     parser.add_argument("--preview", type=int, default=0, metavar="N", help="In N dòng standard_name mẫu")
     parser.add_argument("--batch-size", type=int, default=BATCH)
+    parser.add_argument(
+        "--preserve-dates",
+        action="store_true",
+        help="Giữ ingested_at, nlp_at, processed_at, status khi re-NLP/sync Mongo",
+    )
+    parser.add_argument(
+        "--mongo-renlp-all",
+        action="store_true",
+        help="Re-NLP toàn bộ raw_items không phải junk (không chỉ loaded_mysql/layer2)",
+    )
     args = parser.parse_args()
 
     if args.status:
@@ -321,6 +352,7 @@ def main() -> None:
     if not any(
         [
             args.mongo_renlp,
+            args.mongo_renlp_all,
             args.mongo_renlp_loaded_only,
             args.mongo_etl_ready,
             args.mongo_sync_mysql,
@@ -345,17 +377,22 @@ def main() -> None:
         args.mongo_etl_ready = True
         args.mysql_clear = True
 
+    preserve = args.preserve_dates
+
     if args.mongo_renlp:
-        mongo_renlp(dry, args.batch_size)
+        mongo_renlp(dry, args.batch_size, preserve_dates=preserve)
+
+    if args.mongo_renlp_all:
+        mongo_renlp(dry, args.batch_size, query=RENLP_ALL_QUERY, preserve_dates=preserve)
 
     if args.mongo_renlp_loaded_only:
-        mongo_renlp(dry, args.batch_size, query=RENLP_LOADED_QUERY)
+        mongo_renlp(dry, args.batch_size, query=RENLP_LOADED_QUERY, preserve_dates=preserve)
 
     if args.mongo_etl_ready:
         mongo_prepare_etl(dry)
 
     if args.mongo_sync_mysql:
-        mongo_sync_already_in_mysql(dry, args.batch_size)
+        mongo_sync_already_in_mysql(dry, args.batch_size, preserve_dates=preserve)
 
     if args.mysql_clear:
         if not dry and not args.yes:

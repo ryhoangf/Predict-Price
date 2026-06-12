@@ -17,6 +17,11 @@ _EMOJI_RE = re.compile(
 )
 _URL_RE = re.compile(r'http\S+|www\S+')
 _WS_RE = re.compile(r'\s+')
+_COMPACT_IPHONE_RE = re.compile(
+    r'\biphone\s*(\d{1,2})\s*(pro\s*max|promax|pro|max|plus|mini)?',
+    re.IGNORECASE,
+)
+NLP_IDENTITY_VERSION = "title_identity_2026_06_12_v2"
 _BRAND_FIX_RE = (
     (re.compile(r'\biphone\b', re.IGNORECASE), 'iPhone'),
     (re.compile(r'\bgalaxy\b', re.IGNORECASE), 'Galaxy'),
@@ -143,6 +148,25 @@ class PhoneInfoExtractor:
             text = cre.sub(' ', text)
 
         text = text.replace('　', ' ')
+        text = _COMPACT_IPHONE_RE.sub(
+            lambda m: (
+                " ".join(
+                    part
+                    for part in (
+                        "iPhone",
+                        m.group(1),
+                        "Pro Max"
+                        if (m.group(2) or "").lower().replace(" ", "") == "promax"
+                        else (m.group(2) or "").title(),
+                    )
+                    if part
+                )
+                # Khi group(2) rỗng, _COMPACT_IPHONE_RE đã nuốt dấu cách phân cách
+                # (vd. "iPhone 13 256GB" → "iPhone 13 " consumed). Trả lại dấu cách đó.
+                + (" " if not m.group(2) and m.group(0).endswith((" ", "\t")) else "")
+            ),
+            text,
+        )
         text = _WS_RE.sub(' ', text).strip()
 
         for cre, repl in _BRAND_FIX_RE:
@@ -182,6 +206,16 @@ class PhoneInfoExtractor:
         ):
             raw = match.group(1).upper().replace(" ", "")
             model_line, model_number = "iPhone", raw
+        elif match := re.search(
+            r'iPhone\s*(\d{1,2})\s*(Pro\s*Max|ProMax)\b',
+            text,
+            re.IGNORECASE,
+        ):
+            model_line, model_number = "iPhone", f"{match.group(1)} Pro Max"
+        elif match := re.search(r'iPhone\s*(\d{1,2})\s*Pro\b', text, re.IGNORECASE):
+            model_line, model_number = "iPhone", f"{match.group(1)} Pro"
+        elif match := re.search(r'iPhone\s*(\d{1,2})\s*Plus\b', text, re.IGNORECASE):
+            model_line, model_number = "iPhone", f"{match.group(1)} Plus"
         elif match := re.search(r'iPhone\s*(\d{1,2}|XR|XS|X)\b', text, re.IGNORECASE):
             model_line, model_number = "iPhone", match.group(1)
         elif match := re.search(
@@ -368,7 +402,8 @@ class PhoneInfoExtractor:
             'variant': dict_features['variant'],
             'color': dict_features['color'],
             'ram': ram,
-            'capacity': capacity
+            'capacity': capacity,
+            'nlp_identity_version': NLP_IDENTITY_VERSION,
         }
 
     @staticmethod
