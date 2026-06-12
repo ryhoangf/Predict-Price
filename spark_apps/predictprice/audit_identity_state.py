@@ -50,14 +50,20 @@ def main() -> int:
         "iPhone 13 Pro titles still parsed as base:",
         col.count_documents(
             {
-                "name": {"$regex": r"iPhone\s*13.*Pro", "$options": "i"},
+                "name": {
+                    "$regex": r"iPhone\s*13.*\bPro(?:\s*Max)?\b",
+                    "$options": "i",
+                },
                 "model_number": "13",
             }
         ),
     )
     unresolved = col.find(
         {
-            "name": {"$regex": r"iPhone\s*13.*Pro", "$options": "i"},
+            "name": {
+                "$regex": r"iPhone\s*13.*\bPro(?:\s*Max)?\b",
+                "$options": "i",
+            },
             "model_number": "13",
         },
         {"_id": 0, "name": 1, "source": 1},

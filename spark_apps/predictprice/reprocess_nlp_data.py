@@ -501,7 +501,11 @@ def main() -> None:
         )
 
     if args.mongo_renlp_all:
-        renlp_all_query = dict(RENLP_ALL_QUERY)
+        renlp_all_query = (
+            {"nlp_identity_version": {"$ne": NLP_IDENTITY_VERSION}}
+            if args.identity_only
+            else dict(RENLP_ALL_QUERY)
+        )
         if args.source:
             renlp_all_query["source"] = args.source
         mongo_renlp(
