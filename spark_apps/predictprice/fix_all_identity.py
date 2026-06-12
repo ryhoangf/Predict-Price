@@ -5,8 +5,8 @@ Flow:
   1. Back up MongoDB raw_items and MySQL identity tables.
   2. Re-run NLP for documents not carrying the current NLP identity version.
   3. Restore loaded_mysql status from URLs already present in MySQL.
-  4. Repair listing product IDs from Mongo raw titles. A description is trusted
-     only when it contains an explicit model-name label.
+  4. Repair the audited iPhone 13 family from Mongo raw titles. A description
+     is trusted only when it contains an explicit model-name label.
   5. Delete known fake products only when they have no listings.
 
 The workflow never runs mysql-clear or rewrites posted_at/last_updated.
@@ -76,7 +76,12 @@ def main() -> int:
             return 1
 
     if not args.skip_mysql:
-        repair_cmd = [py, "repair_generic_product_buckets.py", "--all-products"]
+        repair_cmd = [
+            py,
+            "repair_generic_product_buckets.py",
+            "--keyword",
+            "iPhone 13",
+        ]
         repair_cmd.append("--dry-run" if args.dry_run else "--yes")
         if _run(repair_cmd) != 0:
             return 1

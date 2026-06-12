@@ -77,6 +77,7 @@ def main() -> int:
                 "--single-transaction",
                 "--quick",
                 "--skip-lock-tables",
+                "--no-tablespaces",
                 cfg.MYSQL_DB,
                 *MYSQL_TABLES,
             ],
