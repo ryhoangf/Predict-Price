@@ -90,20 +90,8 @@ def _json_dict(raw: Any) -> dict[str, Any]:
         return {}
 
 
-def _canonical_from_text(
-    text_value: str,
-    extractor: PhoneInfoExtractor,
-    brand_hint: str | None = None,
-) -> dict[str, Any] | None:
+def _canonical_from_text(text_value: str, extractor: PhoneInfoExtractor) -> dict[str, Any] | None:
     row = row_from_mongo_doc({"name": text_value}, extractor)
-    detected_brand = str(row.get("brand") or "").strip()
-    hint = str(brand_hint or "").strip()
-    if (
-        hint
-        and detected_brand.lower() == hint.lower()
-        and not str(text_value or "").strip().lower().startswith(hint.lower())
-    ):
-        row = row_from_mongo_doc({"name": f"{hint} {text_value}"}, extractor)
     name = build_product_display_name(row)
     key = build_product_identity_key(row)
     if not name or not key:
@@ -163,10 +151,7 @@ def _identity_source(
     title = compact_identity_text((raw_doc or {}).get("name"), limit=300)
     if not title:
         title = compact_identity_text(listing.get("product_name"), limit=300)
-    brand_hint = str(listing.get("product_brand") or "").strip()
-    title_canonical = (
-        _canonical_from_text(title, extractor, brand_hint=brand_hint) if title else None
-    )
+    title_canonical = _canonical_from_text(title, extractor) if title else None
 
     description = (
         (raw_doc or {}).get("explanation")
@@ -174,11 +159,7 @@ def _identity_source(
         or listing.get("description")
     )
     explicit_text = _explicit_model_text(description)
-    explicit_canonical = (
-        _canonical_from_text(explicit_text, extractor, brand_hint=brand_hint)
-        if explicit_text
-        else None
-    )
+    explicit_canonical = _canonical_from_text(explicit_text, extractor) if explicit_text else None
 
     if (
         title_canonical
@@ -205,17 +186,35 @@ def classify_listing(
     if not source_text:
         return "quarantine_unclear_identity", None, 0.0
 
-    canonical = _canonical_from_text(
-        source_text,
-        extractor,
-        brand_hint=str(listing.get("product_brand") or "").strip(),
-    )
+    canonical = _canonical_from_text(source_text, extractor)
     if len(model_family_hits(source_text)) >= 2 or is_mixed_model_text(source_text):
         return "quarantine_mixed_bundle", canonical, 0.0
     if not canonical:
         return "quarantine_unclear_identity", None, 0.0
     if canonical.get("quality_reason"):
         return f"quarantine_{canonical['quality_reason']}", canonical, 0.0
+
+    current_specs = _json_dict(listing.get("product_specs"))
+    canonical_specs = _json_dict(canonical.get("base_specs"))
+    same_metadata = (
+        str(listing.get("product_brand") or "").strip().lower()
+        == str(canonical.get("brand") or "").strip().lower()
+        and str(listing.get("product_name") or "").strip().lower()
+        == str(canonical.get("name") or "").strip().lower()
+        and current_specs.get("storage") == canonical_specs.get("storage")
+        and current_specs.get("ram") == canonical_specs.get("ram")
+    )
+    if same_metadata:
+        current_key = product_identity_key_from_product_row(
+            {
+                "name": listing.get("product_name"),
+                "brand": listing.get("product_brand"),
+                "model_series": listing.get("product_model_series"),
+                "base_specs": listing.get("product_specs"),
+            }
+        )
+        if current_key:
+            canonical["product_identity_key"] = current_key
 
     old_brand = str(listing.get("product_brand") or "").strip().lower()
     new_brand = str(canonical.get("brand") or "").strip().lower()
