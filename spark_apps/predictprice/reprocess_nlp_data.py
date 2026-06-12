@@ -415,6 +415,10 @@ def main() -> None:
         action="store_true",
         help="Chỉ chạy lại title identity NLP; giữ nguyên item explanation và junk result",
     )
+    parser.add_argument(
+        "--source",
+        help="Giới hạn re-NLP theo source (mercari, rakuma, yahooauction)",
+    )
     args = parser.parse_args()
 
     if args.status:
@@ -452,27 +456,37 @@ def main() -> None:
     preserve = args.preserve_dates
 
     if args.mongo_renlp:
+        renlp_query = dict(RENLP_QUERY)
+        if args.source:
+            renlp_query["source"] = args.source
         mongo_renlp(
             dry,
             args.batch_size,
+            query=renlp_query,
             preserve_dates=preserve,
             identity_only=args.identity_only,
         )
 
     if args.mongo_renlp_all:
+        renlp_all_query = dict(RENLP_ALL_QUERY)
+        if args.source:
+            renlp_all_query["source"] = args.source
         mongo_renlp(
             dry,
             args.batch_size,
-            query=RENLP_ALL_QUERY,
+            query=renlp_all_query,
             preserve_dates=preserve,
             identity_only=args.identity_only,
         )
 
     if args.mongo_renlp_loaded_only:
+        renlp_loaded_query = dict(RENLP_LOADED_QUERY)
+        if args.source:
+            renlp_loaded_query["source"] = args.source
         mongo_renlp(
             dry,
             args.batch_size,
-            query=RENLP_LOADED_QUERY,
+            query=renlp_loaded_query,
             preserve_dates=preserve,
             identity_only=args.identity_only,
         )
