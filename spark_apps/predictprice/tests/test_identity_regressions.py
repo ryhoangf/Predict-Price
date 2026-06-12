@@ -39,6 +39,21 @@ class IdentityRegressionTests(unittest.TestCase):
                 self.assertEqual(result["brand"], "Apple", msg=f"brand mismatch for '{title}'")
                 self.assertEqual(result["nlp_identity_version"], NLP_IDENTITY_VERSION)
 
+    def test_common_compact_and_japanese_model_forms_are_normalized(self):
+        cases = {
+            "iPhone SE\uFF08\u7B2C2\u4E16\u4EE3\uFF09 128GB": ("Apple", "iPhone", "SE2"),
+            "iPhoneSE \u7B2C2\u4E16\u4EE3 64GB": ("Apple", "iPhone", "SE2"),
+            "iPhone mini 13 128GB": ("Apple", "iPhone", "13 mini"),
+            "Galaxy S25Ultra 512GB": ("Samsung", "Galaxy", "S25 Ultra"),
+            "Xperia 1VII 256GB": ("Sony", "Xperia", "1 VII"),
+            "realme P4 Power 8GB 256GB": ("Realme", "Realme", "P4 Power"),
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                result = self.extractor.extract_all_info(title)
+                actual = (result["brand"], result["model_line"], result["model_number"])
+                self.assertEqual(actual, expected)
+
     def test_description_keyword_spam_does_not_reject_clear_title(self):
         row = {
             "name_raw": "iPhone 13 128GB SIM free",

@@ -21,7 +21,7 @@ _COMPACT_IPHONE_RE = re.compile(
     r'\biphone\s*(\d{1,2})\s*(pro\s*max|promax|pro|max|plus|mini)?',
     re.IGNORECASE,
 )
-NLP_IDENTITY_VERSION = "title_identity_2026_06_12_v2"
+NLP_IDENTITY_VERSION = "title_identity_2026_06_12_v3"
 _BRAND_FIX_RE = (
     (re.compile(r'\biphone\b', re.IGNORECASE), 'iPhone'),
     (re.compile(r'\bgalaxy\b', re.IGNORECASE), 'Galaxy'),
@@ -140,6 +140,12 @@ class PhoneInfoExtractor:
         # Chuẩn hóa Unicode
         text = unicodedata.normalize('NFKC', text)
 
+        text = re.sub(
+            r'\biPhone\s*SE\s*[\(\uFF08]?\s*\u7B2C\s*([23])\s*\u4E16\u4EE3\s*[\)\uFF09]?',
+            lambda m: f"iPhone SE{m.group(1)}",
+            text,
+            flags=re.IGNORECASE,
+        )
         text = _DECOR_RE.sub(' ', text)
         text = _EMOJI_RE.sub(' ', text)
         text = _URL_RE.sub('', text)
@@ -148,6 +154,30 @@ class PhoneInfoExtractor:
             text = cre.sub(' ', text)
 
         text = text.replace('　', ' ')
+        text = re.sub(
+            r'\biPhone\s*SE([23])(?=(?:16|32|64|128|256|512)\s*GB\b)',
+            r'iPhone SE\1 ',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\biPhone\s*(mini|Pro\s*Max|Pro|Plus)\s*(\d{1,2})\b',
+            lambda m: f"iPhone {m.group(2)} {m.group(1)}",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\bGalaxy\s*([SAM]\d{1,2}|Note\d{1,2})\s*(Ultra|Plus|FE)\b',
+            lambda m: f"Galaxy {m.group(1)} {m.group(2)}",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\bXperia\s*(\d{1,2})\s*([IVX]{1,4})\b',
+            lambda m: f"Xperia {m.group(1)} {m.group(2).upper()}",
+            text,
+            flags=re.IGNORECASE,
+        )
         text = _COMPACT_IPHONE_RE.sub(
             lambda m: (
                 " ".join(
@@ -274,6 +304,13 @@ class PhoneInfoExtractor:
             model_line, model_number = "A", f"{match.group(1)}{match.group(2).upper()}"
         elif match := re.search(r'(?i)oppo\s+a\s*(\d+)\b', text):
             model_line, model_number = "A", match.group(1)
+        elif match := re.search(
+            r'(?i)\brealme\s+p\s*(\d+)\s*(power|pro|plus|ultra)?\b',
+            text,
+        ):
+            suffix = (match.group(2) or "").strip().title()
+            model_line = "Realme"
+            model_number = f"P{match.group(1)} {suffix}".strip()
         elif match := re.search(
             r'(?i)(?:huawei\s+)?mate\s*(\d+)\s*(pro|lite|rs)?',
             text,
