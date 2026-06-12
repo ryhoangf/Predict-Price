@@ -70,6 +70,18 @@ def _same_model(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return left["brand"] == right["brand"] and left["model"] == right["model"]
 
 
+def _trusted_expected(
+    expected: dict[str, Any],
+    *,
+    title: str,
+    label: str,
+) -> bool:
+    if expected["brand"] != "huawei":
+        return True
+    context = f"{title} {label}".lower()
+    return bool(re.search(r"\bhuawei\b|\bmate\s*\d|\bnova\s*\d|\benjoy\s*\d", context))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -120,6 +132,9 @@ def main() -> int:
         expected = _identity(label, extractor)
         if expected is None:
             counts["label_unparseable"] += 1
+            continue
+        if not _trusted_expected(expected, title=title, label=label):
+            counts["label_untrusted"] += 1
             continue
         if predicted is None:
             counts["title_unparseable"] += 1
