@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import config as cfg
 
@@ -43,15 +44,24 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    mongo_uri = urlparse(cfg.MONGO_URI)
+    mongo_command = [
+        mongodump,
+        f"--host={mongo_uri.hostname or 'localhost'}",
+        f"--port={mongo_uri.port or 27017}",
+        "--authenticationDatabase=admin",
+        "--authenticationMechanism=SCRAM-SHA-256",
+        f"--db={cfg.DB_NAME}",
+        f"--collection={cfg.COLLECTION_NAME}",
+        f"--archive={mongo_path}",
+        "--gzip",
+    ]
+    if mongo_uri.username:
+        mongo_command.append(f"--username={unquote(mongo_uri.username)}")
+    if mongo_uri.password:
+        mongo_command.append(f"--password={unquote(mongo_uri.password)}")
     subprocess.run(
-        [
-            mongodump,
-            f"--uri={cfg.MONGO_URI}",
-            f"--db={cfg.DB_NAME}",
-            f"--collection={cfg.COLLECTION_NAME}",
-            f"--archive={mongo_path}",
-            "--gzip",
-        ],
+        mongo_command,
         check=True,
     )
 
