@@ -100,10 +100,25 @@ def main() -> int:
         rows = conn.execute(
             text(
                 """
-                SELECT p.name, p.model_series,
+                SELECT p.product_id, p.name, p.model_series,
                        JSON_UNQUOTE(JSON_EXTRACT(p.base_specs, '$.storage')) AS storage,
                        COUNT(l.listing_id) AS listings,
-                       SUM(l.posted_at >= '2026-06-08') AS listings_since_2026_06_08
+                       SUM(l.posted_at >= '2026-06-08') AS listings_since_2026_06_08,
+                       (
+                           SELECT COUNT(DISTINCT ph.record_date)
+                           FROM price_history ph
+                           WHERE ph.product_id = p.product_id
+                       ) AS history_days,
+                       (
+                           SELECT MAX(ph.record_date)
+                           FROM price_history ph
+                           WHERE ph.product_id = p.product_id
+                       ) AS latest_history_date,
+                       (
+                           SELECT MAX(pf.forecast_date)
+                           FROM price_forecasts pf
+                           WHERE pf.product_id = p.product_id
+                       ) AS latest_forecast_date
                 FROM products p
                 LEFT JOIN active_listings l ON l.product_id = p.product_id
                 WHERE p.brand = 'Apple' AND p.name LIKE 'iPhone 13%'
