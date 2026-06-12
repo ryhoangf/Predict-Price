@@ -15,7 +15,7 @@ from NLP.title_nlp import (
     PhoneInfoExtractor,
     product_identity_key_from_product_row,
 )
-from repair_generic_product_buckets import classify_listing
+from repair_generic_product_buckets import _canonical_from_text, classify_listing
 
 
 class IdentityRegressionTests(unittest.TestCase):
@@ -135,6 +135,28 @@ class IdentityRegressionTests(unittest.TestCase):
             }
         )
         self.assertEqual(key, "oppo|a 3|128|")
+
+    def test_repair_identity_uses_matching_brand_hint_for_compact_model(self):
+        extractor = PhoneInfoExtractor()
+        samsung = _canonical_from_text(
+            "Galaxy S22Ultra 256GB",
+            extractor,
+            brand_hint="Samsung",
+        )
+        sony = _canonical_from_text(
+            "Xperia 10IV 128GB",
+            extractor,
+            brand_hint="Sony",
+        )
+
+        self.assertEqual(
+            samsung["product_identity_key"],
+            "samsung|galaxy s22 ultra|256|",
+        )
+        self.assertEqual(
+            sony["product_identity_key"],
+            "sony|xperia 10 iv|128|",
+        )
 
 
 if __name__ == "__main__":
