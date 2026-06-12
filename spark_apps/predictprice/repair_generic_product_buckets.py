@@ -317,7 +317,24 @@ def _load_target_products(conn, source_ids: set[str]) -> dict[str, str]:
         if not key:
             continue
         current = selected.get(key)
-        if current is None or product_candidate_priority(product) > product_candidate_priority(current):
+        canonical_brand, canonical_name, _, _ = key.split("|", 3)
+
+        def target_priority(candidate: dict[str, Any]) -> tuple[int, int, int, int]:
+            raw_brand = str(candidate.get("brand") or "").strip().lower()
+            raw_name = re.sub(
+                r"\s+",
+                " ",
+                str(candidate.get("name") or "").strip().lower(),
+            )
+            clean_name, listing_count = product_candidate_priority(candidate)
+            return (
+                int(raw_brand == canonical_brand),
+                int(raw_name == canonical_name),
+                clean_name,
+                listing_count,
+            )
+
+        if current is None or target_priority(product) > target_priority(current):
             selected[key] = product
     return {key: str(product["product_id"]) for key, product in selected.items()}
 
@@ -468,9 +485,12 @@ def _select_listings(conn, args: argparse.Namespace) -> list[dict[str, Any]]:
 
 def _print_plan(actions: list[dict[str, Any]]) -> None:
     summary: dict[str, int] = {}
+    changed_summary: dict[str, int] = {}
     by_target: dict[str, int] = {}
     for item in actions:
         summary[item["action"]] = summary.get(item["action"], 0) + 1
+        if item.get("identity_changed"):
+            changed_summary[item["action"]] = changed_summary.get(item["action"], 0) + 1
         canonical = item.get("canonical") or {}
         target_name = canonical.get("name") or item.get("review_name") or "NONE"
         by_target[target_name] = by_target.get(target_name, 0) + 1
@@ -484,6 +504,9 @@ def _print_plan(actions: list[dict[str, Any]]) -> None:
     print(
         f"  identity_unchanged: {sum(not bool(item.get('identity_changed')) for item in actions)}"
     )
+    print("  changed_by_action:")
+    for key, value in sorted(changed_summary.items()):
+        print(f"    {key}: {value}")
 
     print("\nTop target/review buckets:")
     for key, value in sorted(by_target.items(), key=lambda x: x[1], reverse=True)[:20]:
