@@ -30,14 +30,14 @@ def _affected_product_ids(conn, repair_date: str) -> list[str]:
             SELECT r.old_product_id AS product_id
             FROM product_identity_repair_log r
             JOIN products p ON p.product_id = r.old_product_id
-            WHERE DATE(created_at) = :repair_date
+            WHERE DATE(r.created_at) = :repair_date
               AND COALESCE(p.category, '') <> 'Review'
               AND COALESCE(p.brand, '') <> 'Needs Review'
             UNION
             SELECT r.new_product_id AS product_id
             FROM product_identity_repair_log r
             JOIN products p ON p.product_id = r.new_product_id
-            WHERE DATE(created_at) = :repair_date
+            WHERE DATE(r.created_at) = :repair_date
               AND COALESCE(p.category, '') <> 'Review'
               AND COALESCE(p.brand, '') <> 'Needs Review'
             """
