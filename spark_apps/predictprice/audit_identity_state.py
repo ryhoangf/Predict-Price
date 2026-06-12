@@ -27,6 +27,21 @@ def main() -> int:
         "current NLP version:",
         col.count_documents({"nlp_identity_version": NLP_IDENTITY_VERSION}),
     )
+    print("missing current NLP version by source:")
+    for row in col.aggregate(
+        [
+            {
+                "$match": {
+                    "is_junk": {"$ne": True},
+                    "link": {"$exists": True, "$ne": None},
+                    "nlp_identity_version": {"$ne": NLP_IDENTITY_VERSION},
+                }
+            },
+            {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+        ]
+    ):
+        print(f"  {row['_id']}: {row['count']}")
     print(
         "iPhone 13 title records:",
         col.count_documents({"name": {"$regex": r"iPhone\s*13", "$options": "i"}}),
