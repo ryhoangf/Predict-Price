@@ -192,6 +192,7 @@ def _renlp_batch(
     identity_only: bool = False,
 ) -> int:
     df = pd.DataFrame(docs)
+    mongo_ids = df["_id"].tolist() if "_id" in df.columns else []
     if "_id" in df.columns:
         df = df.drop(columns=["_id"])
 
@@ -209,6 +210,38 @@ def _renlp_batch(
             if _IDENTITY_EXTRACTOR is None:
                 _IDENTITY_EXTRACTOR = PhoneInfoExtractor()
             sub = _IDENTITY_EXTRACTOR.process_dataframe(grp.copy(), title_column="name")
+            from pymongo import UpdateOne
+
+            identity_fields = (
+                "original_title",
+                "preprocessed_title",
+                "brand",
+                "model_line",
+                "model_number",
+                "variant",
+                "color",
+                "ram",
+                "capacity",
+                "nlp_identity_version",
+            )
+            ops = []
+            for row_index, row in sub.iterrows():
+                if row_index >= len(mongo_ids):
+                    continue
+                payload = {
+                    field: (None if pd.isna(row.get(field)) else row.get(field))
+                    for field in identity_fields
+                }
+                payload["nlp_done"] = True
+                ops.append(UpdateOne({"_id": mongo_ids[row_index]}, {"$set": payload}))
+            if ops:
+                result = col.bulk_write(ops, ordered=False)
+                updated += int(result.modified_count or 0)
+                print(
+                    f"  source={src}: rows={len(sub)} "
+                    f"updated={result.modified_count} stage=updated_by_id"
+                )
+            continue
         else:
             sub = run_nlp_pipeline(grp.copy(), src)
         stats = apply_nlp_batch(
