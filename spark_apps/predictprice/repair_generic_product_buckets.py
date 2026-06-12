@@ -506,6 +506,16 @@ def main() -> int:
     parser.add_argument("--product-id")
     parser.add_argument("--bad-storage", action="store_true")
     parser.add_argument("--all-products", action="store_true")
+    parser.add_argument(
+        "--require-raw-match",
+        action="store_true",
+        help="Skip listings that cannot be matched to a Mongo raw document.",
+    )
+    parser.add_argument(
+        "--leave-quarantine-in-place",
+        action="store_true",
+        help="Write review rows for ambiguous listings without changing their product_id.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
@@ -526,6 +536,18 @@ def main() -> int:
     actions: list[dict[str, Any]] = []
     for listing in listings:
         raw_doc = raw_docs.get(str(listing.get("source_url") or ""))
+        if args.require_raw_match and raw_doc is None:
+            actions.append(
+                {
+                    "listing": listing,
+                    "action": "skip_missing_raw",
+                    "canonical": None,
+                    "confidence": 0.0,
+                    "review_name": None,
+                    "identity_changed": False,
+                }
+            )
+            continue
         action, canonical, confidence = classify_listing(listing, extractor, raw_doc)
         review_name = None
         if action.startswith("quarantine_mixed"):
@@ -577,11 +599,18 @@ def main() -> int:
             action = item["action"]
             confidence = item["confidence"]
 
+            if action == "skip_missing_raw":
+                continue
+
             if action.startswith("migrate") and canonical:
                 target_product_id = _ensure_product(conn, canonical, targets)
                 target_product_name = canonical["name"]
                 reason = action
             else:
+                if args.leave_quarantine_in_place:
+                    _insert_review(conn, listing, action, canonical)
+                    reviewed += 1
+                    continue
                 target_product_id = mixed_review_id if action.startswith("quarantine_mixed") else unclear_review_id
                 target_product_name = MIXED_REVIEW_NAME if action.startswith("quarantine_mixed") else UNCLEAR_REVIEW_NAME
                 reason = action
