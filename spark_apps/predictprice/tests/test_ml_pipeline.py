@@ -14,6 +14,7 @@ if APP_ROOT not in sys.path:
 
 from ml_models.smart_price_predictor import SmartPricePredictor
 from ml_models.backtest_price_forecast import backtest
+from ml_models.forecast_algorithms import converging_rolling_median
 from ml_models.train_depreciation_model import train as train_depreciation
 
 
@@ -147,6 +148,27 @@ class MlPipelineTests(unittest.TestCase):
         self.assertIn("history_trend", report["metrics"])
         self.assertIn("last_value", report["metrics"])
         self.assertGreater(report["metrics"]["history_trend"]["1"]["n"], 0)
+
+    def test_converging_median_moves_without_inventing_long_term_slope(self):
+        history = [
+            {
+                "record_date": day.date(),
+                "avg_price": price,
+            }
+            for day, price in zip(
+                pd.date_range("2026-01-01", periods=7, freq="D"),
+                [100, 100, 100, 100, 100, 100, 130],
+            )
+        ]
+        forecast, _ = converging_rolling_median(
+            history,
+            horizon_days=30,
+            anchor_date=pd.Timestamp("2026-01-07").date(),
+            convergence_days=3,
+        )
+        prices = [row["predicted_price_vnd"] for row in forecast]
+        self.assertGreater(prices[0], prices[-1])
+        self.assertAlmostEqual(prices[-1], 100, delta=0.01)
 
     def test_depreciation_gate_rejects_short_history(self):
         panel = pd.DataFrame({

@@ -19,11 +19,12 @@ from ml_models.depreciation_curve import (
     resolve_market_anchor_vnd,
 )
 from ml_models.prediction_quality import compute_prediction_quality
+from ml_models.forecast_algorithms import converging_rolling_median
 from NLP.title_nlp import resolve_product_ml_identity
 
 _METHOD_LABEL_VI = {
     "history_trend": "xu hướng lịch sử (chỉ giảm hoặc giữ nguyên)",
-    "rolling_median": "trung vị giá 7 ngày gần nhất",
+    "converging_median": "hội tụ dần về trung vị giá 7 ngày",
     "none": "chưa đủ dữ liệu",
 }
 
@@ -293,11 +294,12 @@ def compute_price_forecast_30d(
 
     anchor_price_vnd = float(history_norm[-1]["avg_price"])
     rolling_window = int(cfg.get("rolling_median_window_days", 7))
-    forecasts, trend_meta = _rolling_median_forecast(
+    forecasts, trend_meta = converging_rolling_median(
         history_norm,
         horizon_days=horizon,
         anchor_date=anchor_date,
         window_days=rolling_window,
+        convergence_days=float(cfg.get("median_convergence_days", 3.0)),
     )
 
     confidence = prediction_quality["score"]
@@ -312,8 +314,8 @@ def compute_price_forecast_30d(
         "status_message_vi": None,
         "anchor_price_vnd": round(anchor_price_vnd, 2),
         "anchor_source": "price_history",
-        "method": "rolling_median",
-        "method_label_vi": _METHOD_LABEL_VI["rolling_median"],
+        "method": "converging_median",
+        "method_label_vi": _METHOD_LABEL_VI["converging_median"],
         "confidence": round(float(confidence), 3),
         "forecasts": forecasts,
         "summary": {

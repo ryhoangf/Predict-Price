@@ -12,6 +12,10 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 import config as cfg
+from ml_models.forecast_algorithms import (
+    converging_rolling_median,
+    damped_rolling_median_trend,
+)
 
 
 MYSQL_URI = (
@@ -113,6 +117,39 @@ def backtest(
             moving_median = float(np.median(
                 [by_date[day] for day in train_dates[-7:]]
             ))
+            history_rows = [
+                {"record_date": day, "avg_price": by_date[day]}
+                for day in train_dates
+            ]
+            damped_forecasts, _ = damped_rolling_median_trend(
+                history_rows,
+                horizon_days=max(horizons),
+                anchor_date=origin_date,
+                window_days=int(cfg_forecast.get("rolling_median_window_days", 7)),
+                slope_lookback_points=int(
+                    cfg_forecast.get("trend_slope_lookback_points", 14)
+                ),
+                damping_days=float(cfg_forecast.get("trend_damping_days", 14)),
+                max_daily_change_pct=float(
+                    cfg_forecast.get("trend_max_daily_change_pct", 0.5)
+                ),
+                max_horizon_change_pct=float(
+                    cfg_forecast.get("trend_max_horizon_change_pct", 8.0)
+                ),
+            )
+            convergence_forecasts = {}
+            for convergence_days in (1.0, 3.0, 7.0):
+                convergence_forecasts[convergence_days], _ = (
+                    converging_rolling_median(
+                        history_rows,
+                        horizon_days=max(horizons),
+                        anchor_date=origin_date,
+                        window_days=int(
+                            cfg_forecast.get("rolling_median_window_days", 7)
+                        ),
+                        convergence_days=convergence_days,
+                    )
+                )
 
             for horizon in horizons:
                 target_date = origin_date + pd.Timedelta(days=horizon)
@@ -125,6 +162,21 @@ def backtest(
                 )
                 results["last_value"][horizon].append((actual, anchor))
                 results["moving_median_7"][horizon].append((actual, moving_median))
+                results["damped_median_trend"][horizon].append(
+                    (
+                        actual,
+                        float(damped_forecasts[horizon - 1]["predicted_price_vnd"]),
+                    )
+                )
+                for convergence_days, convergence in convergence_forecasts.items():
+                    results[
+                        f"converging_median_{int(convergence_days)}d"
+                    ][horizon].append(
+                        (
+                            actual,
+                            float(convergence[horizon - 1]["predicted_price_vnd"]),
+                        )
+                    )
 
     metrics = {
         method: {
