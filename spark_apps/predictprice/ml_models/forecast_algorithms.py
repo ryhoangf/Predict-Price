@@ -111,13 +111,16 @@ def converging_rolling_median(
     anchor_date: date,
     window_days: int = 7,
     convergence_days: float = 3.0,
+    max_target_change_pct: float = 8.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Smoothly converge from the latest observed price to the robust median."""
     prices = [float(row["avg_price"]) for row in history[-window_days:]]
     if not prices:
         return [], {"method_detail": "converging_rolling_median", "points_used": 0}
     anchor = float(history[-1]["avg_price"])
-    level = float(np.median(prices))
+    raw_level = float(np.median(prices))
+    max_change = anchor * max_target_change_pct / 100.0
+    level = float(np.clip(raw_level, anchor - max_change, anchor + max_change))
     series = []
     for day in range(1, horizon_days + 1):
         weight = float(np.exp(-day / max(convergence_days, 0.1)))
@@ -134,4 +137,7 @@ def converging_rolling_median(
         "points_used": len(prices),
         "anchor_price_vnd": round(anchor, 2),
         "median_price_vnd": round(level, 2),
+        "raw_median_price_vnd": round(raw_level, 2),
+        "target_was_clipped": bool(abs(raw_level - level) > 0.01),
+        "max_target_change_pct": max_target_change_pct,
     }

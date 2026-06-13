@@ -300,6 +300,9 @@ def compute_price_forecast_30d(
         anchor_date=anchor_date,
         window_days=rolling_window,
         convergence_days=float(cfg.get("median_convergence_days", 3.0)),
+        max_target_change_pct=float(
+            cfg.get("median_max_target_change_pct", 8.0)
+        ),
     )
 
     confidence = prediction_quality["score"]

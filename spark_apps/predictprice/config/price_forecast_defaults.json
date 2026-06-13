@@ -9,6 +9,7 @@
   "trend_lookback_days": 14,
   "rolling_median_window_days": 7,
   "median_convergence_days": 3,
+  "median_max_target_change_pct": 8,
   "yen_to_vnd": 175,
   "disclaimer": "Ước tính bắt đầu từ giá mới nhất rồi hội tụ dần về trung vị 7 ngày; walk-forward backtest cho kết quả tốt hơn trend cũ ở D+7 và tương đương median tại D+30."
 }

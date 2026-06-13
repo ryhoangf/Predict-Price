@@ -168,7 +168,22 @@ class MlPipelineTests(unittest.TestCase):
         )
         prices = [row["predicted_price_vnd"] for row in forecast]
         self.assertGreater(prices[0], prices[-1])
-        self.assertAlmostEqual(prices[-1], 100, delta=0.01)
+        self.assertAlmostEqual(prices[-1], 119.6, delta=0.02)
+
+    def test_converging_median_clips_extreme_target(self):
+        history = [
+            {"record_date": pd.Timestamp(f"2026-01-0{day}").date(), "avg_price": 100}
+            for day in range(1, 7)
+        ] + [{"record_date": pd.Timestamp("2026-01-07").date(), "avg_price": 10}]
+        forecast, diagnostics = converging_rolling_median(
+            history,
+            horizon_days=30,
+            anchor_date=pd.Timestamp("2026-01-07").date(),
+            convergence_days=3,
+            max_target_change_pct=8,
+        )
+        self.assertTrue(diagnostics["target_was_clipped"])
+        self.assertLessEqual(forecast[-1]["predicted_price_vnd"], 10.8)
 
     def test_depreciation_gate_rejects_short_history(self):
         panel = pd.DataFrame({
