@@ -756,6 +756,17 @@ def predict_product_prices(engine):
             numeric_agg = listings_df.groupby('product_id').agg({
                 'battery_percentage': 'mean',
             }).reset_index()
+            listing_counts = (
+                listings_df.groupby('product_id')
+                .size()
+                .rename('listing_count')
+                .reset_index()
+            )
+            numeric_agg = numeric_agg.merge(
+                listing_counts,
+                on='product_id',
+                how='left',
+            )
             
             # Boolean: MODE
             bool_cols = ['has_box', 'has_charger', 'is_sim_free', 'fully_functional',
@@ -813,14 +824,10 @@ def predict_product_prices(engine):
         
         # ===== PREDICT VỚI REAL FEATURES =====
         print("\nPredicting with aggregated features...")
+        products_df = products_df.reset_index(drop=True)
         predictions_yen = price_predictor.predict(products_df)
         predictions_vnd = predictions_yen * YEN_TO_VND_RATE
-        
-        # Calculate confidence
-        if hasattr(price_predictor, 'train_stats_') and price_predictor.train_stats_:
-            base_confidence = price_predictor.train_stats_.get('test_r2', 0.5) * 100
-        else:
-            base_confidence = 50.0
+        quality_scores = price_predictor.prediction_quality_scores(products_df)
         
         # Insert into price_forecasts
         forecast_records = []
@@ -830,7 +837,7 @@ def predict_product_prices(engine):
                 'product_id': row['product_id'],
                 'forecast_date': datetime.now().date(),
                 'predicted_price': float(predictions_vnd[idx]),
-                'confidence_score': float(base_confidence),
+                'confidence_score': float(quality_scores[idx] * 100.0),
                 'model_version': model_version
             })
         
@@ -850,14 +857,18 @@ def predict_product_prices(engine):
         print(f"✓ Saved {len(forecast_records)} price forecasts")
         
         # Show sample
-        print(f"\n📊 Sample Predictions (Model: {model_version}, Confidence: {base_confidence:.1f}%):")
+        print(f"\n📊 Sample Predictions (Model: {model_version}):")
         sample = products_df.head(3)
         for idx, row in sample.iterrows():
             pred_yen = predictions_yen[idx]
             pred_vnd = predictions_vnd[idx]
             battery = row.get('battery_percentage', 'N/A')
             has_box = '✓' if row.get('has_box') else '✗'
-            print(f"   {row['name'][:40]:<40} | Battery: {battery:>5}% | Box: {has_box} → ¥{pred_yen:>8,.0f}")
+            confidence = quality_scores[idx] * 100.0
+            print(
+                f"   {row['name'][:40]:<40} | Battery: {battery:>5}% | "
+                f"Box: {has_box} | Quality: {confidence:>5.1f}% → ¥{pred_yen:>8,.0f}"
+            )
         
     except Exception as e:
         print(f"❌ Error predicting product prices: {e}")

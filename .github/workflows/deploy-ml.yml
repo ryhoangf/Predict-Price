@@ -25,7 +25,40 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/ivaluate-ml
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: Dockerfile.ml
+      - name: Install ML test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pandas==2.2.3 \
+            numpy==1.26.4 \
+            scipy==1.13.1 \
+            scikit-learn==1.7.2 \
+            joblib==1.3.2 \
+            lightgbm==4.6.0 \
+            flashtext==2.7 \
+            pytest
+      - name: Compile ML modules
+        run: |
+          python -m py_compile \
+            spark_apps/predictprice/ml_models/smart_price_predictor.py \
+            spark_apps/predictprice/ml_models/train_price_model.py \
+            spark_apps/predictprice/ml_models/depreciation_curve.py
+      - name: Run regression tests
+        env:
+          PYTHONPATH: spark_apps/predictprice
+        run: python -m pytest spark_apps/predictprice/tests -q
+
   build-deploy:
+    needs: test
     runs-on: ubuntu-latest
     env:
       VPS_A_HOST: ${{ secrets.VPS_A_HOST }}

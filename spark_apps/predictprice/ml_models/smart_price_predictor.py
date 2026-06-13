@@ -5,7 +5,7 @@ import json
 import os
 import re
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
 
 class SmartPricePredictor:
@@ -22,6 +22,7 @@ class SmartPricePredictor:
         self.feature_columns = None
         self.feature_importance_ = None
         self.train_stats_ = None
+        self.model_metadata_ = {}
         self.model_price_map = {}
         
         # Load từ điển năm ra mắt & Chuẩn bị Regex Vector hóa
@@ -179,7 +180,7 @@ class SmartPricePredictor:
         
         return df
     
-    def train(self, df, target_col='price', test_size=0.2, verbose=True):
+    def _legacy_train(self, df, target_col='price', test_size=0.2, verbose=True):
         if verbose:
             print(f"\n{'='*80}")
             print(f"TRAINING SMART PRICE PREDICTOR")
@@ -248,20 +249,244 @@ class SmartPricePredictor:
                 print(f"   {row['feature']:<30} {row['importance']:>6.1%} {bar}")
                 
         return self.train_stats_
-    
+
+    @staticmethod
+    def _full_model_name(df):
+        return (
+            df['model_line'].astype(str).fillna('') + ' ' +
+            df['model_number'].astype(str).fillna('') + ' ' +
+            df['variant'].astype(str).fillna('')
+        ).str.replace('None', '', regex=False).str.replace(
+            'nan', '', regex=False
+        ).str.strip()
+
+    @classmethod
+    def split_data(
+        cls,
+        df,
+        *,
+        test_size=0.2,
+        random_state=42,
+        strategy='auto',
+        time_col=None,
+    ):
+        """Split raw rows before fitting target-derived features."""
+        data = df.copy().reset_index(drop=True)
+        requested_strategy = strategy
+        time_candidates = [time_col] if time_col else []
+        time_candidates += ['posted_at', 'ingested_at', 'etl_at', 'created_at']
+        usable_time_col = next(
+            (
+                col for col in time_candidates
+                if col and col in data.columns
+                and pd.to_datetime(data[col], errors='coerce').notna().sum() >= 2
+            ),
+            None,
+        )
+
+        if strategy == 'auto':
+            strategy = 'temporal' if usable_time_col else 'random'
+
+        if strategy == 'temporal':
+            if not usable_time_col:
+                raise ValueError(
+                    'Temporal split requested but no usable timestamp column was found.'
+                )
+            timestamps = pd.to_datetime(data[usable_time_col], errors='coerce')
+            fallback = timestamps.dropna().min()
+            ordered = data.assign(
+                _split_time=timestamps.fillna(fallback)
+            ).sort_values('_split_time')
+            cut = max(1, min(len(ordered) - 1, int(len(ordered) * (1 - test_size))))
+            train_df = ordered.iloc[:cut].drop(columns=['_split_time'])
+            test_df = ordered.iloc[cut:].drop(columns=['_split_time'])
+            split_info = {'strategy': 'temporal', 'time_col': usable_time_col}
+        elif strategy == 'group':
+            groups = cls._full_model_name(data).replace('', 'unknown')
+            if groups.nunique() >= 2:
+                splitter = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=test_size,
+                    random_state=random_state,
+                )
+                train_idx, test_idx = next(splitter.split(data, groups=groups))
+                train_df = data.iloc[train_idx]
+                test_df = data.iloc[test_idx]
+                split_info = {
+                    'strategy': 'group',
+                    'group_col': 'full_model_name',
+                    'train_groups': int(groups.iloc[train_idx].nunique()),
+                    'test_groups': int(groups.iloc[test_idx].nunique()),
+                }
+            else:
+                strategy = 'random'
+
+        if strategy == 'random':
+            train_df, test_df = train_test_split(
+                data,
+                test_size=test_size,
+                random_state=random_state,
+            )
+            split_info = {'strategy': 'random'}
+
+        split_info.update({
+            'requested_strategy': requested_strategy,
+            'n_train': int(len(train_df)),
+            'n_test': int(len(test_df)),
+        })
+        return (
+            train_df.reset_index(drop=True),
+            test_df.reset_index(drop=True),
+            split_info,
+        )
+
+    def fit(self, df, target_col='price', verbose=True):
+        """Fit the model and target encoding on training rows only."""
+        temp_df = df.copy()
+        temp_df['full_model_name'] = self._full_model_name(temp_df)
+        self.model_price_map = (
+            temp_df.groupby('full_model_name')[target_col].median().to_dict()
+        )
+
+        df_engineered = self.engineer_features(df)
+        feature_cols = [
+            'model_base_price', 'release_year', 'device_age_years',
+            'age_condition_interaction', 'condition_score', 'battery_score',
+            'screen_score', 'body_score', 'quality_score', 'battery_percentage',
+            'battery_penalty', 'screen_penalty', 'body_penalty',
+            'accessories_bonus', 'storage_gb', 'storage_tier', 'ram_gb',
+            'battery_storage', 'quality_storage', 'condition_accessories',
+            'platform_encoded', 'has_box', 'has_charger', 'is_sim_free',
+            'fully_functional', 'has_any_damage', 'damage_severity',
+            'functionality_score',
+        ]
+        self.feature_columns = [
+            col for col in feature_cols if col in df_engineered.columns
+        ]
+        X = df_engineered[self.feature_columns]
+        y = df_engineered[target_col]
+        self.model.fit(X, y)
+
+        train_pred = self.model.predict(X)
+        self.train_stats_ = {
+            'train_mae': float(mean_absolute_error(y, train_pred)),
+            'train_r2': float(r2_score(y, train_pred)),
+            'n_train': int(len(X)),
+            'n_features': int(len(self.feature_columns)),
+        }
+        self.feature_importance_ = pd.DataFrame({
+            'feature': self.feature_columns,
+            'importance': self.model.feature_importances_,
+        }).sort_values('importance', ascending=False)
+        if verbose:
+            print(
+                f"Train MAE: ¥{self.train_stats_['train_mae']:,.0f} | "
+                f"R² = {self.train_stats_['train_r2']:.3f}"
+            )
+        return self.train_stats_
+
+    def evaluate(self, df, target_col='price'):
+        if self.feature_columns is None:
+            raise ValueError("Model not trained yet.")
+        y_true = pd.to_numeric(df[target_col], errors='coerce')
+        valid = y_true.notna()
+        eval_df = df.loc[valid].copy()
+        y_true = y_true.loc[valid].to_numpy()
+        y_pred = self.predict(eval_df)
+        abs_error = np.abs(y_true - y_pred)
+        denominator = np.maximum(np.abs(y_true), 1.0)
+        return {
+            'mae': float(mean_absolute_error(y_true, y_pred)),
+            'median_ae': float(np.median(abs_error)),
+            'rmse': float(np.sqrt(mean_squared_error(y_true, y_pred))),
+            'r2': float(r2_score(y_true, y_pred)),
+            'smape': float(np.mean(
+                2.0 * abs_error /
+                np.maximum(np.abs(y_true) + np.abs(y_pred), 1.0)
+            )),
+            'within_10pct': float(np.mean(abs_error / denominator <= 0.10)),
+            'within_20pct': float(np.mean(abs_error / denominator <= 0.20)),
+            'n_samples': int(len(y_true)),
+        }
+
+    def train(
+        self,
+        df,
+        target_col='price',
+        test_size=0.2,
+        verbose=True,
+        split_strategy='auto',
+        time_col=None,
+    ):
+        train_df, test_df, split_info = self.split_data(
+            df,
+            test_size=test_size,
+            strategy=split_strategy,
+            time_col=time_col,
+        )
+        self.fit(train_df, target_col=target_col, verbose=verbose)
+        metrics = self.evaluate(test_df, target_col=target_col)
+        self.train_stats_.update({
+            'test_mae': metrics['mae'],
+            'test_median_ae': metrics['median_ae'],
+            'test_rmse': metrics['rmse'],
+            'test_r2': metrics['r2'],
+            'test_smape': metrics['smape'],
+            'test_within_10pct': metrics['within_10pct'],
+            'test_within_20pct': metrics['within_20pct'],
+            'n_test': metrics['n_samples'],
+            'split': split_info,
+        })
+        self.model_metadata_['split'] = split_info
+        if verbose:
+            print(
+                f"Test MAE: ¥{metrics['mae']:,.0f} | "
+                f"R² = {metrics['r2']:.3f} | "
+                f"within 20% = {metrics['within_20pct']:.1%}"
+            )
+        return self.train_stats_
+
     def predict(self, df):
         if self.feature_columns is None: raise ValueError("Model not trained yet.")
         df_engineered = self.engineer_features(df)
         return self.model.predict(df_engineered[self.feature_columns])
+
+    def prediction_quality_scores(self, df):
+        """
+        Return a case-level data quality score, not a statistical probability.
+
+        The score is calibrated from held-out accuracy and reduced for inputs
+        that the cold-start audit shows are unreliable.
+        """
+        rows = df.copy()
+        full_names = self._full_model_name(rows)
+        known_model = full_names.isin(self.model_price_map)
+        base = float((self.train_stats_ or {}).get('test_within_20pct', 0.5))
+        scores = pd.Series(base, index=rows.index, dtype=float)
+        scores.loc[~known_model] *= 0.25
+
+        if 'storage' in rows.columns:
+            storage_known = rows['storage'].notna() & (
+                rows['storage'].astype(str).str.strip() != ''
+            )
+            scores.loc[~storage_known] *= 0.75
+        if 'listing_count' in rows.columns:
+            listing_count = pd.to_numeric(
+                rows['listing_count'], errors='coerce'
+            ).fillna(0)
+            scores.loc[listing_count < 3] *= 0.70
+            scores.loc[(listing_count >= 3) & (listing_count < 10)] *= 0.85
+        return scores.clip(lower=0.05, upper=0.90).to_numpy()
     
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         joblib.dump({
             'model': self.model, 'feature_columns': self.feature_columns,
             'feature_importance': self.feature_importance_, 'train_stats': self.train_stats_,
-            'model_price_map': self.model_price_map
+            'model_price_map': self.model_price_map,
+            'model_metadata': self.model_metadata_,
         }, path)
-        print(f"✓ Model saved to {path}")
+        print(f"Model saved to {path}")
     
     def load(self, path):
         data = joblib.load(path)
@@ -270,6 +495,7 @@ class SmartPricePredictor:
         self.feature_importance_ = data.get('feature_importance')
         self.train_stats_ = data.get('train_stats')
         self.model_price_map = data.get('model_price_map', {})
+        self.model_metadata_ = data.get('model_metadata', {})
 
 class EnsemblePricePredictor:
     def __init__(self, **kwargs):
@@ -313,7 +539,7 @@ class EnsemblePricePredictor:
             'apple_model': self.apple_model, 'android_model': self.android_model,
             'is_trained': self.is_trained
         }, path)
-        print(f"✓ Ensemble Model saved to {path}")
+        print(f"Ensemble model saved to {path}")
 
     def load(self, path):
         data = joblib.load(path)

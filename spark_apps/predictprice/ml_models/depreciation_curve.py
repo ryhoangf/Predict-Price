@@ -54,11 +54,17 @@ def get_model_version(
 ) -> str:
     if predictor is not None and getattr(predictor, "train_stats_", None):
         r2 = predictor.train_stats_.get("test_r2", 0) or 0
-        return f"smart_v1_r2_{r2:.3f}"
+        fingerprint = (
+            getattr(predictor, "model_metadata_", {}) or {}
+        ).get("dataset_sha256_16")
+        suffix = f"_{fingerprint[:8]}" if fingerprint else ""
+        return f"smart_v2_r2_{r2:.3f}{suffix}"
     path = os.path.abspath(model_path or DEFAULT_MODEL_PATH)
     data = joblib.load(path)
     stats = data.get("train_stats") or {}
-    return f"smart_v1_r2_{stats.get('test_r2', 0):.3f}"
+    fingerprint = (data.get("model_metadata") or {}).get("dataset_sha256_16")
+    suffix = f"_{fingerprint[:8]}" if fingerprint else ""
+    return f"smart_v2_r2_{stats.get('test_r2', 0):.3f}{suffix}"
 
 
 def load_curve_config(path: Optional[str] = None) -> dict:

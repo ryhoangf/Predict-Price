@@ -83,7 +83,25 @@ def _warmup_model() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "service": "pricing_ml_api"}
+    response = {"ok": True, "service": "pricing_ml_api"}
+    try:
+        predictor = load_predictor()
+        stats = predictor.train_stats_ or {}
+        metadata = getattr(predictor, "model_metadata_", {}) or {}
+        response["model"] = {
+            "version": get_model_version(predictor=predictor),
+            "test_r2": stats.get("test_r2"),
+            "test_mae_yen": stats.get("test_mae"),
+            "test_within_20pct": stats.get("test_within_20pct"),
+            "quality_gate_passed": stats.get("quality_gate_passed"),
+            "dataset_sha256_16": metadata.get("dataset_sha256_16"),
+            "trained_at": metadata.get("trained_at"),
+            "split": metadata.get("split"),
+        }
+    except FileNotFoundError:
+        response["ok"] = False
+        response["model"] = None
+    return response
 
 
 class FeatureImpactBody(BaseModel):

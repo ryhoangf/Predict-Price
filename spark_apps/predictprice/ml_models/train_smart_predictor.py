@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import pymongo
 
-from ml_models.smart_price_predictor import SmartPricePredictor, EnsemblePricePredictor
+from ml_models.smart_price_predictor import SmartPricePredictor
 
 # Import from parent package
 from NLP.item_explanation import ItemExplanationExtractor
@@ -138,7 +138,19 @@ def load_and_prepare_data(use_mongodb=True, csv_path=None):
     
     # Merge all features
     print("\nMerging features...")
-    df_final = df[['name', 'price', 'condition', 'source']].copy()
+    base_cols = ['name', 'price', 'condition', 'source']
+    timestamp_cols = [
+        col for col in (
+            'posted_at',
+            'ingested_at',
+            'etl_at',
+            'created_at',
+            'source_url',
+            'link',
+        )
+        if col in df.columns
+    ]
+    df_final = df[base_cols + timestamp_cols].copy()
     
     # Add title features
     df_final['brand'] = df_title['brand']
@@ -324,13 +336,13 @@ def train_model(df):
     print("="*80)
     
     # Initialize model
-    predictor = EnsemblePricePredictor()
+    predictor = SmartPricePredictor()
     
     # Train
     predictor.train(df, target_col='price', test_size=0.2)
     
     # Save
-    model_path = os.path.join(predictprice_path, 'models', 'ensemble_price_predictor.pkl')
+    model_path = os.path.join(predictprice_path, 'models', 'smart_price_predictor.pkl')
     predictor.save(model_path)
     
     return predictor
@@ -420,7 +432,7 @@ def main():
         print("  ✅ TRAINING COMPLETED SUCCESSFULLY!")
         print("="*80)
         print("\n📁 Output files:")
-        print(f"  - {os.path.join(predictprice_path, 'models', 'ensemble_price_predictor.pkl')} (trained model)")
+        print(f"  - {os.path.join(predictprice_path, 'models', 'smart_price_predictor.pkl')} (trained model)")
         print(f"  - {os.path.join(project_root, 'book_data', 'training_data.csv')} (processed data)")
         print("\n🚀 Next steps:")
         print("  1. Test model: python test_ensemble_predictor.py")
