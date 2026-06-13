@@ -4,7 +4,6 @@
     "age_step": 1,
     "reference_year": 2026,
     "min_listings_for_anchor": 3,
-    "min_annual_depreciation_pct": 8.0,
     "yen_to_vnd": 175,
     "baseline_source": {
       "min_listings_for_aggregate": 5
@@ -28,5 +27,5 @@
       "has_damage": 0,
       "has_issues": 0
     },
-    "disclaimer": "Đường cong neo giá thị trường hôm nay (price_history hoặc median listing); hình khấu hao theo tỷ lệ ML; tuổi máy tăng thì giá không tăng."
+    "disclaimer": "Đường cong dùng tỷ lệ giá theo tuổi do model học từ dữ liệu listing, neo vào giá thị trường hiện tại và làm trơn đơn điệu. Không áp mức giảm phần trăm cố định mỗi năm."
   }

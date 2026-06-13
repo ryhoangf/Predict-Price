@@ -16,6 +16,7 @@ from ml_models.smart_price_predictor import SmartPricePredictor
 from ml_models.backtest_price_forecast import backtest
 from ml_models.forecast_algorithms import converging_rolling_median
 from ml_models.train_depreciation_model import train as train_depreciation
+from ml_models.depreciation_curve import _fit_monotonic_decreasing
 from ml_models.temporal_price_forecaster import (
     FEATURES as FORECAST_FEATURES,
     TemporalPriceForecaster,
@@ -206,6 +207,18 @@ class MlPipelineTests(unittest.TestCase):
         artifact, report = train_depreciation(panel)
         self.assertIsNone(artifact)
         self.assertFalse(report["passed"])
+
+    def test_depreciation_isotonic_removes_upward_noise_without_fixed_rate(self):
+        fitted = _fit_monotonic_decreasing(
+            [0, 1, 2, 3, 4],
+            [100, 82, 86, 70, 68],
+        )
+        self.assertTrue(all(
+            fitted[index] >= fitted[index + 1]
+            for index in range(len(fitted) - 1)
+        ))
+        self.assertAlmostEqual(fitted[1], 84.0)
+        self.assertAlmostEqual(fitted[2], 84.0)
 
     def test_temporal_forecast_features_only_use_history_prefix(self):
         history = [

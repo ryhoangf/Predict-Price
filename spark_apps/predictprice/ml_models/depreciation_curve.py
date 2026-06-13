@@ -8,7 +8,9 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 import joblib
+import numpy as np
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 
 from ml_models.smart_price_predictor import SmartPricePredictor
 
@@ -217,56 +219,20 @@ def predict_yen_at_device_age(
     return float(predictor.model.predict(X)[0])
 
 
-def _enforce_monotonic_decreasing(ages: list[float], prices: list[float]) -> list[float]:
-    """Tuổi máy tăng → giá không tăng (khấu hao)."""
+def _fit_monotonic_decreasing(ages: list[float], prices: list[float]) -> list[float]:
+    """Closest non-increasing curve to the model predictions."""
     if not prices:
         return prices
-    out = [float(prices[0])]
-    for i in range(1, len(prices)):
-        if ages[i] > ages[i - 1]:
-            out.append(min(float(prices[i]), out[-1]))
-        else:
-            out.append(float(prices[i]))
-    return out
-
-
-def _min_depreciation_ratios(
-    ages: list[float],
-    *,
-    age_now: float,
-    min_annual_dep_pct: float,
-) -> list[float]:
-    """
-    Sàn khấu hao: tuổi > age_now thì mỗi năm giảm tối thiểu min_annual_dep_pct%.
-    Tuổi < age_now được phép cao hơn anchor (máy mới hơn).
-    """
-    dep = float(min_annual_dep_pct) / 100.0
-    ratios: list[float] = []
-    for age in ages:
-        if age >= age_now:
-            years_older = float(age - age_now)
-            ratios.append((1.0 - dep) ** years_older)
-        else:
-            years_younger = float(age_now - age)
-            ratios.append((1.0 + dep) ** years_younger)
-    return ratios
-
-
-def _merge_ml_and_floor_ratios(
-    ml_ratios: list[float],
-    floor_ratios: list[float],
-    ages: list[float],
-    *,
-    age_now: float,
-) -> list[float]:
-    """Tuổi lớn hơn: lấy ratio thấp hơn (khấu hao mạnh hơn). Tuổi nhỏ hơn: lấy ratio cao hơn."""
-    out: list[float] = []
-    for ml_r, floor_r, age in zip(ml_ratios, floor_ratios, ages):
-        if age >= age_now:
-            out.append(min(float(ml_r), float(floor_r)))
-        else:
-            out.append(max(float(ml_r), float(floor_r)))
-    return out
+    if len(prices) == 1:
+        return [float(prices[0])]
+    fitted = IsotonicRegression(
+        increasing=False,
+        out_of_bounds="clip",
+    ).fit_transform(
+        np.asarray(ages, dtype=float),
+        np.asarray(prices, dtype=float),
+    )
+    return [float(value) for value in fitted]
 
 
 def _pin_anchor_at_age(
@@ -294,10 +260,12 @@ def market_anchored_curve_vnd(
     age_max: float,
     age_step: float,
     reference_year: int,
-    min_annual_dep_pct: float = 8.0,
 ) -> tuple[list[float], list[float], list[float]]:
     """
-    prices_vnd[age] = anchor × ratio(age); ratio = min(ML, sàn khấu hao năm).
+    prices_vnd[age] = anchor × model-relative ratio(age).
+
+    Isotonic regression removes local upward noise without imposing a fixed
+    annual depreciation percentage.
     Trả về (ages, prices_vnd, prices_yen_ml_raw).
     """
     ages, yen_raw = predict_depreciation_curve_yen(
@@ -314,14 +282,13 @@ def market_anchored_curve_vnd(
     else:
         ml_ratios = [float(y) / yen_now for y in yen_raw]
 
-    floor_ratios = _min_depreciation_ratios(
-        ages, age_now=age_now, min_annual_dep_pct=min_annual_dep_pct
-    )
-    ratios = _merge_ml_and_floor_ratios(ml_ratios, floor_ratios, ages, age_now=age_now)
-
-    vnd = [anchor_vnd * r for r in ratios]
-    vnd = _pin_anchor_at_age(ages, vnd, age_now=age_now, anchor_vnd=anchor_vnd)
-    vnd = _enforce_monotonic_decreasing(ages, vnd)
+    model_vnd = [anchor_vnd * ratio for ratio in ml_ratios]
+    vnd = _fit_monotonic_decreasing(ages, model_vnd)
+    anchor_index = min(range(len(ages)), key=lambda i: abs(ages[i] - age_now))
+    fitted_anchor = float(vnd[anchor_index])
+    if fitted_anchor > 1e-6:
+        scale = float(anchor_vnd) / fitted_anchor
+        vnd = [float(value) * scale for value in vnd]
     return ages, vnd, yen_raw
 
 
@@ -446,7 +413,6 @@ def compute_depreciation_curve_response(
         age_max=float(cfg.get("age_max", 8)),
         age_step=float(cfg.get("age_step", 1)),
         reference_year=ref_year,
-        min_annual_dep_pct=float(cfg.get("min_annual_depreciation_pct", 8.0)),
     )
     fx = float(cfg.get("yen_to_vnd", yen_to_vnd))
     prices_yen_chart = [round(float(p) / fx, 2) for p in vnd]
@@ -470,4 +436,6 @@ def compute_depreciation_curve_response(
         "device_age_years_now": age_now,
         "history_points": anchor_info.get("history_points", 0),
         "listing_count": anchor_info.get("listing_count", 0),
+        "curve_method": "market_anchored_ml_ratio_isotonic_v2",
+        "fixed_annual_depreciation_pct": None,
     }
