@@ -19,5 +19,6 @@ COPY spark_apps/predictprice/config ./config
 COPY spark_apps/predictprice/NLP/title_nlp.py ./NLP/title_nlp.py
 COPY spark_apps/predictprice/models/smart_price_predictor.pkl ./models/smart_price_predictor.pkl
 COPY spark_apps/predictprice/models/temporal_price_forecaster.pkl ./models/temporal_price_forecaster.pkl
+COPY spark_apps/predictprice/models/depreciation_model.pkl ./models/depreciation_model.pkl
 EXPOSE 8000
 CMD ["uvicorn", "api.api_depreciation:app", "--host", "0.0.0.0", "--port", "8000"]

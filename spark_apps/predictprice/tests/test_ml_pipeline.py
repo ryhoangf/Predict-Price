@@ -16,7 +16,10 @@ from ml_models.smart_price_predictor import SmartPricePredictor
 from ml_models.backtest_price_forecast import backtest
 from ml_models.forecast_algorithms import converging_rolling_median
 from ml_models.train_depreciation_model import train as train_depreciation
-from ml_models.depreciation_curve import _fit_monotonic_decreasing
+from ml_models.depreciation_curve import (
+    _fit_monotonic_decreasing,
+    dedicated_depreciation_curve_vnd,
+)
 from ml_models.temporal_price_forecaster import (
     FEATURES as FORECAST_FEATURES,
     TemporalPriceForecaster,
@@ -219,6 +222,47 @@ class MlPipelineTests(unittest.TestCase):
         ))
         self.assertAlmostEqual(fitted[1], 84.0)
         self.assertAlmostEqual(fitted[2], 84.0)
+
+    def test_dedicated_depreciation_uses_learned_robust_slope(self):
+        class AgeModel:
+            def predict(self, matrix):
+                return np.log(100) - 0.15 * matrix["device_age_years"].to_numpy()
+
+        artifact = {
+            "model": AgeModel(),
+            "features": [
+                "device_age_years",
+                "storage_log",
+                "listing_count_log",
+                "brand_apple",
+                "brand_samsung",
+                "brand_google",
+                "brand_sony",
+                "brand_sharp",
+                "brand_xiaomi",
+                "brand_oppo",
+                "brand_motorola",
+                "brand_huawei",
+                "brand_asus",
+            ],
+        }
+        ages, prices, meta = dedicated_depreciation_curve_vnd(
+            artifact,
+            brand="Apple",
+            storage="128GB",
+            listing_count=20,
+            anchor_vnd=10_000_000,
+            age_now=4,
+            age_min=0,
+            age_max=8,
+            age_step=1,
+        )
+        self.assertEqual(prices[4], 10_000_000)
+        self.assertTrue(all(
+            prices[index] >= prices[index + 1]
+            for index in range(len(prices) - 1)
+        ))
+        self.assertAlmostEqual(meta["annual_depreciation_pct"], 13.929, places=3)
 
     def test_temporal_forecast_features_only_use_history_prefix(self):
         history = [

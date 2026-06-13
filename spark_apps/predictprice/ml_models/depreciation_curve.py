@@ -13,11 +13,15 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 
 from ml_models.smart_price_predictor import SmartPricePredictor
+from ml_models.train_depreciation_model import feature_row as depreciation_feature_row
 
 # Thư mục spark_apps/predictprice
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MODEL_PATH = os.path.join(_APP_ROOT, "models", "smart_price_predictor.pkl")
 DEFAULT_CURVE_CONFIG_PATH = os.path.join(_APP_ROOT, "config", "depreciation_curve_defaults.json")
+DEFAULT_DEPRECIATION_MODEL_PATH = os.path.join(
+    _APP_ROOT, "models", "depreciation_model.pkl"
+)
 # Đồng bộ với etl.YEN_TO_VND_RATE — tránh import etl (side effect load model)
 DEFAULT_YEN_TO_VND = 175
 
@@ -292,6 +296,59 @@ def market_anchored_curve_vnd(
     return ages, vnd, yen_raw
 
 
+def dedicated_depreciation_curve_vnd(
+    artifact: dict[str, Any],
+    *,
+    brand: str,
+    storage: object,
+    listing_count: float,
+    anchor_vnd: float,
+    age_now: float,
+    age_min: float,
+    age_max: float,
+    age_step: float,
+    max_annual_drop_pct: float = 20.0,
+) -> tuple[list[float], list[float], dict[str, float]]:
+    ages: list[float] = []
+    rows: list[dict[str, float]] = []
+    age = float(age_min)
+    while age <= age_max + 1e-9:
+        ages.append(age)
+        rows.append(depreciation_feature_row(
+            device_age_years=age,
+            storage=storage,
+            listing_count=listing_count,
+            brand=brand,
+        ))
+        age += age_step
+    matrix = pd.DataFrame(rows)[artifact["features"]]
+    raw_log_prices = np.asarray(artifact["model"].predict(matrix), dtype=float)
+    slopes = []
+    for left in range(len(ages)):
+        for right in range(left + 1, len(ages)):
+            delta_age = ages[right] - ages[left]
+            if delta_age > 0:
+                slopes.append(
+                    (raw_log_prices[right] - raw_log_prices[left]) / delta_age
+                )
+    raw_slope = float(np.median(slopes)) if slopes else 0.0
+    min_log_slope = float(np.log1p(-max_annual_drop_pct / 100.0))
+    applied_slope = float(np.clip(raw_slope, min_log_slope, 0.0))
+    prices = [
+        float(anchor_vnd) * float(np.exp(applied_slope * (age - age_now)))
+        for age in ages
+    ]
+    return ages, prices, {
+        "raw_annual_depreciation_pct": round(
+            (1.0 - float(np.exp(raw_slope))) * 100.0, 3
+        ),
+        "annual_depreciation_pct": round(
+            (1.0 - float(np.exp(applied_slope))) * 100.0, 3
+        ),
+        "max_annual_drop_safety_pct": max_annual_drop_pct,
+    }
+
+
 def predict_depreciation_curve_yen(
     predictor: SmartPricePredictor,
     raw_row: dict[str, Any],
@@ -404,16 +461,45 @@ def compute_depreciation_curve_response(
             "history_points": anchor_info.get("history_points", 0),
         }
 
-    ages, vnd, yen_ml_raw = market_anchored_curve_vnd(
-        pred,
-        raw_row,
-        anchor_vnd=float(anchor_info["anchor_price_vnd"]),
-        age_now=age_now,
-        age_min=float(cfg.get("age_min", 0)),
-        age_max=float(cfg.get("age_max", 8)),
-        age_step=float(cfg.get("age_step", 1)),
-        reference_year=ref_year,
-    )
+    depreciation_artifact = None
+    try:
+        depreciation_path = str(
+            cfg.get("depreciation_model_path") or DEFAULT_DEPRECIATION_MODEL_PATH
+        )
+        if not os.path.exists(depreciation_path):
+            depreciation_path = DEFAULT_DEPRECIATION_MODEL_PATH
+        depreciation_artifact = joblib.load(depreciation_path)
+        ages, vnd, depreciation_meta = dedicated_depreciation_curve_vnd(
+            depreciation_artifact,
+            brand=str(raw_row.get("brand") or ""),
+            storage=raw_row.get("storage"),
+            listing_count=float(anchor_info.get("listing_count") or 0),
+            anchor_vnd=float(anchor_info["anchor_price_vnd"]),
+            age_now=age_now,
+            age_min=float(cfg.get("age_min", 0)),
+            age_max=float(cfg.get("age_max", 8)),
+            age_step=float(cfg.get("age_step", 1)),
+            max_annual_drop_pct=float(
+                cfg.get("max_annual_depreciation_safety_pct", 20.0)
+            ),
+        )
+        yen_ml_raw = [float(price) / float(yen_to_vnd) for price in vnd]
+        curve_method = depreciation_artifact.get(
+            "method", "monotonic_hedonic_depreciation_v2"
+        )
+    except (FileNotFoundError, KeyError, TypeError, ValueError):
+        ages, vnd, yen_ml_raw = market_anchored_curve_vnd(
+            pred,
+            raw_row,
+            anchor_vnd=float(anchor_info["anchor_price_vnd"]),
+            age_now=age_now,
+            age_min=float(cfg.get("age_min", 0)),
+            age_max=float(cfg.get("age_max", 8)),
+            age_step=float(cfg.get("age_step", 1)),
+            reference_year=ref_year,
+        )
+        curve_method = "market_anchored_ml_ratio_isotonic_fallback"
+        depreciation_meta = {}
     fx = float(cfg.get("yen_to_vnd", yen_to_vnd))
     prices_yen_chart = [round(float(p) / fx, 2) for p in vnd]
 
@@ -436,6 +522,11 @@ def compute_depreciation_curve_response(
         "device_age_years_now": age_now,
         "history_points": anchor_info.get("history_points", 0),
         "listing_count": anchor_info.get("listing_count", 0),
-        "curve_method": "market_anchored_ml_ratio_isotonic_v2",
+        "curve_method": curve_method,
         "fixed_annual_depreciation_pct": None,
+        "depreciation_model_quality_gate": (
+            depreciation_artifact.get("quality_gate")
+            if depreciation_artifact else None
+        ),
+        "depreciation_diagnostics": depreciation_meta,
     }

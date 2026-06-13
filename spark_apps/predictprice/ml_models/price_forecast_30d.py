@@ -191,7 +191,7 @@ def build_product_baseline_row(
     if "condition_rank" in agg:
         agg["condition"] = agg.pop("condition_rank")
 
-    return build_baseline_row(
+    row = build_baseline_row(
         model_line=identity["model_line"],
         model_number=identity["model_number"],
         variant=identity["variant"],
@@ -200,6 +200,8 @@ def build_product_baseline_row(
         overrides=agg,
         config=curve_cfg,
     )
+    row["brand"] = product.get("brand")
+    return row
 
 
 def _specs_storage_ram(specs: dict[str, Any]) -> tuple[str, str]:

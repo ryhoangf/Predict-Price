@@ -4,6 +4,8 @@
     "age_step": 1,
     "reference_year": 2026,
     "min_listings_for_anchor": 3,
+    "depreciation_model_path": "/app/models/depreciation_model.pkl",
+    "max_annual_depreciation_safety_pct": 20.0,
     "yen_to_vnd": 175,
     "baseline_source": {
       "min_listings_for_aggregate": 5

@@ -1,0 +1,40 @@
+{
+  "created_at": "2026-06-13T18:50:20.030601+00:00",
+  "data": {
+    "products": 3274,
+    "rows": 3274,
+    "date_min": "2025-12-18T00:00:00",
+    "date_max": "2026-06-13T00:00:00",
+    "age_min": 0.0,
+    "age_max": 12.0,
+    "brands": 32
+  },
+  "training": {
+    "passed": true,
+    "n_train": 2619,
+    "n_test": 655,
+    "metrics": {
+      "model": {
+        "mae_vnd": 3210931.243530024,
+        "mape_pct": 54.88358204719073,
+        "within_20pct": 0.28091603053435116,
+        "r2_log_price": 0.49817141289914735
+      },
+      "brand_median_baseline": {
+        "mae_vnd": 4918953.362226855,
+        "mape_pct": 96.28027358885238,
+        "within_20pct": 0.14045801526717558,
+        "r2_log_price": 0.07174280650060649
+      }
+    },
+    "quality_gate": {
+      "max_mae_ratio_vs_brand_baseline": 0.95,
+      "min_r2_log_price": 0.3,
+      "min_within_20pct": 0.25,
+      "actual_mae_ratio_vs_brand_baseline": 0.652767165508641,
+      "actual_r2_log_price": 0.49817141289914735,
+      "actual_within_20pct": 0.28091603053435116,
+      "passed": true
+    }
+  }
+}
