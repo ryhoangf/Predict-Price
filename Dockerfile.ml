@@ -5,10 +5,10 @@ RUN pip install --no-cache-dir \
     fastapi==0.115.12 \
     uvicorn[standard]==0.34.3 \
     pandas==2.2.3 \
-    numpy==1.26.4 \
+    numpy==2.2.6 \
     scipy==1.13.1 \
     scikit-learn==1.7.2 \
-    joblib==1.3.2 \
+    joblib==1.5.3 \
     sqlalchemy==2.0.41 \
     pymysql==1.1.1 \
     flashtext==2.7 \
