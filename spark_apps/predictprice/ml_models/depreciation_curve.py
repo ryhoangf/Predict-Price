@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import date, datetime
 from typing import Any, Optional
 
@@ -13,7 +14,6 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 
 from ml_models.smart_price_predictor import SmartPricePredictor
-from ml_models.train_depreciation_model import feature_row as depreciation_feature_row
 
 # Thư mục spark_apps/predictprice
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,6 +27,43 @@ DEFAULT_YEN_TO_VND = 175
 
 _predictor: Optional[SmartPricePredictor] = None
 _predictor_path: Optional[str] = None
+_DEPRECIATION_BRANDS = [
+    "apple", "samsung", "google", "sony", "sharp", "xiaomi",
+    "oppo", "motorola", "huawei", "asus",
+]
+
+
+def _depreciation_storage_gb(value: object) -> float:
+    match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(TB|GB)?",
+        str(value or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        return 64.0
+    amount = float(match.group(1))
+    if (match.group(2) or "").upper() == "TB":
+        amount *= 1024.0
+    return amount if 1 <= amount <= 2048 else 64.0
+
+
+def _depreciation_feature_row(
+    *,
+    device_age_years: float,
+    storage: object,
+    listing_count: float,
+    brand: str,
+) -> dict[str, float]:
+    normalized_brand = str(brand or "").strip().lower()
+    return {
+        "device_age_years": float(max(device_age_years, 0.0)),
+        "storage_log": float(np.log1p(_depreciation_storage_gb(storage))),
+        "listing_count_log": float(np.log1p(max(float(listing_count or 0), 0.0))),
+        **{
+            f"brand_{known}": float(normalized_brand == known)
+            for known in _DEPRECIATION_BRANDS
+        },
+    }
 
 
 def get_default_model_path() -> str:
@@ -314,7 +351,7 @@ def dedicated_depreciation_curve_vnd(
     age = float(age_min)
     while age <= age_max + 1e-9:
         ages.append(age)
-        rows.append(depreciation_feature_row(
+        rows.append(_depreciation_feature_row(
             device_age_years=age,
             storage=storage,
             listing_count=listing_count,

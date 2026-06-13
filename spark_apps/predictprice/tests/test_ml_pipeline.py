@@ -17,9 +17,11 @@ from ml_models.backtest_price_forecast import backtest
 from ml_models.forecast_algorithms import converging_rolling_median
 from ml_models.train_depreciation_model import train as train_depreciation
 from ml_models.depreciation_curve import (
+    _depreciation_feature_row,
     _fit_monotonic_decreasing,
     dedicated_depreciation_curve_vnd,
 )
+from ml_models.train_depreciation_model import feature_row as training_depreciation_feature_row
 from ml_models.temporal_price_forecaster import (
     FEATURES as FORECAST_FEATURES,
     TemporalPriceForecaster,
@@ -263,6 +265,18 @@ class MlPipelineTests(unittest.TestCase):
             for index in range(len(prices) - 1)
         ))
         self.assertAlmostEqual(meta["annual_depreciation_pct"], 13.929, places=3)
+
+    def test_depreciation_runtime_features_match_training(self):
+        kwargs = {
+            "device_age_years": 4,
+            "storage": "128GB",
+            "listing_count": 20,
+            "brand": "Apple",
+        }
+        self.assertEqual(
+            _depreciation_feature_row(**kwargs),
+            training_depreciation_feature_row(**kwargs),
+        )
 
     def test_temporal_forecast_features_only_use_history_prefix(self):
         history = [
