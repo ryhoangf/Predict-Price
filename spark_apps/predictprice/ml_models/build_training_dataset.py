@@ -23,7 +23,8 @@ FIELDS = [
     "network_restriction", "has_scratches", "screen_condition",
     "body_condition", "has_damage", "face_id_working",
     "touch_id_working", "fully_functional", "has_issues",
-    "ingested_at", "nlp_at", "processed_at", "nlp_identity_version",
+    "posted_at", "date", "created_at", "ingested_at", "nlp_at", "processed_at",
+    "nlp_identity_version",
     "nlp_layer", "nlp_confidence", "is_junk", "junk_reason",
 ]
 
@@ -59,7 +60,7 @@ def build_dataset(
         "model_number": {"$nin": [None, ""]},
     }
     projection = {field: 1 for field in FIELDS}
-    projection["_id"] = 0
+    projection["_id"] = 1
 
     client = pymongo.MongoClient(
         mongo_uri,
@@ -85,19 +86,43 @@ def build_dataset(
             frame[field] = None
     for field in ("brand", "model_line", "model_number", "variant", "storage", "ram"):
         frame[field] = _clean_text(frame[field])
-    for field in ("ingested_at", "nlp_at", "processed_at"):
+    for field in (
+        "posted_at", "date", "created_at", "ingested_at", "nlp_at", "processed_at"
+    ):
         frame[field] = pd.to_datetime(frame[field], errors="coerce", utc=True)
+    object_id_time = pd.to_datetime(
+        frame["_id"].map(
+            lambda value: getattr(value, "generation_time", None)
+        ),
+        errors="coerce",
+        utc=True,
+    )
+    timestamp_sources = {
+        "posted_at": frame["posted_at"].notna(),
+        "ingested_at": frame["ingested_at"].notna(),
+        "date": frame["date"].notna(),
+        "created_at": frame["created_at"].notna(),
+        "object_id": object_id_time.notna(),
+    }
+    frame["event_at"] = (
+        frame["posted_at"]
+        .fillna(frame["ingested_at"])
+        .fillna(frame["date"])
+        .fillna(frame["created_at"])
+        .fillna(object_id_time)
+    )
 
     frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
     frame = frame[frame["price"].between(min_price, max_price)]
-    frame = frame.dropna(subset=["brand", "model_line", "model_number", "ingested_at"])
-    frame = frame.sort_values(["ingested_at", "link"])
+    frame = frame.dropna(subset=["brand", "model_line", "model_number", "event_at"])
+    frame = frame.sort_values(["event_at", "link"])
     duplicate_links = int(frame.duplicated(subset=["link"], keep="last").sum())
     frame = frame.drop_duplicates(subset=["link"], keep="last").reset_index(drop=True)
     frame["ecosystem"] = frame["brand"].str.casefold().map(
         lambda value: "Apple" if value == "apple" else "Android"
     )
-    frame["posted_at"] = frame["ingested_at"]
+    frame["posted_at"] = frame["event_at"]
+    frame = frame.drop(columns=["_id"])
 
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.suffix.lower() == ".parquet":
@@ -124,8 +149,11 @@ def build_dataset(
         "initial_query_rows": int(initial_rows),
         "duplicate_links_removed": duplicate_links,
         "time_range": {
-            "min_ingested_at": frame["ingested_at"].min().isoformat(),
-            "max_ingested_at": frame["ingested_at"].max().isoformat(),
+            "min_event_at": frame["event_at"].min().isoformat(),
+            "max_event_at": frame["event_at"].max().isoformat(),
+            "timestamp_source_available_rows": {
+                key: int(mask.sum()) for key, mask in timestamp_sources.items()
+            },
         },
         "identity": {
             "brands": int(frame["brand"].nunique()),
