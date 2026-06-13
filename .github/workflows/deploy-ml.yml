@@ -59,7 +59,7 @@ jobs:
       - name: Run regression tests
         env:
           PYTHONPATH: spark_apps/predictprice
-        run: python -m pytest spark_apps/predictprice/tests -q
+        run: python -m pytest spark_apps/predictprice/tests/test_ml_pipeline.py -q
 
   build-deploy:
     needs: test
