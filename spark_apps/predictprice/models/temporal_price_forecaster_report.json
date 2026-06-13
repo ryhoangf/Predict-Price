@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-06-13T17:09:37.913920+00:00",
+  "samples": 98508,
+  "training": {
+    "passed": true,
+    "cutoff": "2026-06-10",
+    "n_train": 76212,
+    "n_test": 22296,
+    "products": 579,
+    "date_min": "2026-04-07",
+    "date_max": "2026-06-13",
+    "metrics": {
+      "model": {
+        "n": 22296,
+        "mae_vnd": 1009056.8431351738,
+        "median_ae_vnd": 499034.47204316687,
+        "mape_pct": 19.28014321592383,
+        "within_10pct": 0.5120200932902763,
+        "within_20pct": 0.8044940796555436
+      },
+      "last_value": {
+        "n": 22296,
+        "mae_vnd": 1386057.077376211,
+        "median_ae_vnd": 694532.7850000001,
+        "mape_pct": 26.124908030230742,
+        "within_10pct": 0.4066200215285253,
+        "within_20pct": 0.6673394330821673
+      },
+      "median_7": {
+        "n": 22296,
+        "mae_vnd": 1040614.7194052745,
+        "median_ae_vnd": 512225.0,
+        "mape_pct": 20.29326091109183,
+        "within_10pct": 0.5039917473986365,
+        "within_20pct": 0.7783907427341227
+      },
+      "interval_80_coverage": 0.7853875134553283
+    },
+    "quality_gate": {
+      "max_mae_ratio_vs_best_baseline": 0.99,
+      "min_within_20pct": 0.7,
+      "min_interval_coverage": 0.7,
+      "actual_mae_ratio_vs_best_baseline": 0.9696738132936112,
+      "actual_within_20pct": 0.8044940796555436,
+      "actual_interval_coverage": 0.7853875134553283,
+      "passed": true
+    }
+  }
+}

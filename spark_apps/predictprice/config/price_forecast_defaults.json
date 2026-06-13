@@ -10,6 +10,8 @@
   "rolling_median_window_days": 7,
   "median_convergence_days": 3,
   "median_max_target_change_pct": 8,
+  "temporal_model_path": "/app/models/temporal_price_forecaster.pkl",
+  "temporal_max_horizon_change_pct": 12,
   "yen_to_vnd": 175,
-  "disclaimer": "Ước tính bắt đầu từ giá mới nhất rồi hội tụ dần về trung vị 7 ngày; walk-forward backtest cho kết quả tốt hơn trend cũ ở D+7 và tương đương median tại D+30."
+  "disclaimer": "Temporal ML estimate trained on historical product price movements. The shaded P10-P90 range shows uncertainty; this is guidance, not a guaranteed future price."
 }

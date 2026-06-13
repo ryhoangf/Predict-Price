@@ -16,6 +16,12 @@ from ml_models.smart_price_predictor import SmartPricePredictor
 from ml_models.backtest_price_forecast import backtest
 from ml_models.forecast_algorithms import converging_rolling_median
 from ml_models.train_depreciation_model import train as train_depreciation
+from ml_models.temporal_price_forecaster import (
+    FEATURES as FORECAST_FEATURES,
+    TemporalPriceForecaster,
+    build_feature_row,
+)
+from ml_models.train_price_forecaster import build_supervised_rows
 
 
 def sample_frame():
@@ -200,6 +206,66 @@ class MlPipelineTests(unittest.TestCase):
         artifact, report = train_depreciation(panel)
         self.assertIsNone(artifact)
         self.assertFalse(report["passed"])
+
+    def test_temporal_forecast_features_only_use_history_prefix(self):
+        history = [
+            {
+                "record_date": day.date(),
+                "avg_price": 100 - index,
+                "listing_count": 10 + index,
+            }
+            for index, day in enumerate(pd.date_range("2026-01-01", periods=15))
+        ]
+        features = build_feature_row(history, horizon_days=7)
+        self.assertEqual(set(features), set(FORECAST_FEATURES))
+        self.assertEqual(features["horizon_days"], 7)
+        self.assertLess(features["return_7"], 0)
+
+    def test_temporal_supervised_rows_respect_target_horizon(self):
+        dates = pd.date_range("2026-01-01", periods=20, freq="2D")
+        history = pd.DataFrame({
+            "product_id": ["p1"] * len(dates),
+            "record_date": dates,
+            "avg_price": np.linspace(100, 80, len(dates)),
+            "listing_count": 10,
+        })
+        rows = build_supervised_rows(history, min_history=5, max_horizon=7)
+        self.assertGreater(len(rows), 0)
+        self.assertTrue((rows["horizon_days"] <= 7).all())
+        self.assertTrue((rows["target_date"] > rows["origin_date"]).all())
+
+    def test_temporal_forecaster_returns_ordered_interval(self):
+        class ConstantModel:
+            def __init__(self, value):
+                self.value = value
+
+            def predict(self, matrix):
+                return np.full(len(matrix), self.value)
+
+        forecaster = TemporalPriceForecaster({
+            "model": ConstantModel(0.0),
+            "lower_model": ConstantModel(-0.05),
+            "upper_model": ConstantModel(0.05),
+            "features": FORECAST_FEATURES,
+            "metadata": {"method": "test_temporal"},
+        })
+        history = [
+            {
+                "record_date": day.date(),
+                "avg_price": 100,
+                "listing_count": 10,
+            }
+            for day in pd.date_range("2026-01-01", periods=14)
+        ]
+        points, meta = forecaster.predict(
+            history,
+            horizon_days=3,
+            anchor_date=pd.Timestamp("2026-01-14").date(),
+        )
+        self.assertEqual(meta["method_detail"], "test_temporal")
+        self.assertEqual(len(points), 3)
+        self.assertLess(points[0]["lower_price_vnd"], points[0]["predicted_price_vnd"])
+        self.assertLess(points[0]["predicted_price_vnd"], points[0]["upper_price_vnd"])
 
     def test_old_artifact_without_metadata_still_loads(self):
         predictor = SmartPricePredictor(n_estimators=5, max_depth=4)

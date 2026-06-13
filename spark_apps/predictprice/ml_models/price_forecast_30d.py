@@ -20,16 +20,21 @@ from ml_models.depreciation_curve import (
 )
 from ml_models.prediction_quality import compute_prediction_quality
 from ml_models.forecast_algorithms import converging_rolling_median
+from ml_models.temporal_price_forecaster import load_forecaster
 from NLP.title_nlp import resolve_product_ml_identity
 
 _METHOD_LABEL_VI = {
     "history_trend": "xu hướng lịch sử (chỉ giảm hoặc giữ nguyên)",
     "converging_median": "hội tụ dần về trung vị giá 7 ngày",
+    "temporal_ml": "mô hình ML chuỗi thời gian đa chân trời",
     "none": "chưa đủ dữ liệu",
 }
 
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FORECAST_CONFIG_PATH = os.path.join(_APP_ROOT, "config", "price_forecast_defaults.json")
+DEFAULT_TEMPORAL_MODEL_PATH = os.path.join(
+    _APP_ROOT, "models", "temporal_price_forecaster.pkl"
+)
 
 
 def load_forecast_config(path: Optional[str] = None) -> dict:
@@ -293,17 +298,33 @@ def compute_price_forecast_30d(
         }
 
     anchor_price_vnd = float(history_norm[-1]["avg_price"])
-    rolling_window = int(cfg.get("rolling_median_window_days", 7))
-    forecasts, trend_meta = converging_rolling_median(
-        history_norm,
-        horizon_days=horizon,
-        anchor_date=anchor_date,
-        window_days=rolling_window,
-        convergence_days=float(cfg.get("median_convergence_days", 3.0)),
-        max_target_change_pct=float(
-            cfg.get("median_max_target_change_pct", 8.0)
-        ),
-    )
+    method = "converging_median"
+    model_version = None
+    try:
+        temporal = load_forecaster(
+            str(cfg.get("temporal_model_path") or DEFAULT_TEMPORAL_MODEL_PATH)
+        )
+        forecasts, trend_meta = temporal.predict(
+            history_norm,
+            horizon_days=horizon,
+            anchor_date=anchor_date,
+            max_change_pct=float(cfg.get("temporal_max_horizon_change_pct", 12.0)),
+        )
+        method = "temporal_ml"
+        model_version = trend_meta.get("method_detail")
+    except (FileNotFoundError, KeyError, ValueError, TypeError) as error:
+        rolling_window = int(cfg.get("rolling_median_window_days", 7))
+        forecasts, trend_meta = converging_rolling_median(
+            history_norm,
+            horizon_days=horizon,
+            anchor_date=anchor_date,
+            window_days=rolling_window,
+            convergence_days=float(cfg.get("median_convergence_days", 3.0)),
+            max_target_change_pct=float(
+                cfg.get("median_max_target_change_pct", 8.0)
+            ),
+        )
+        trend_meta["fallback_reason"] = str(error)
 
     confidence = prediction_quality["score"]
 
@@ -317,8 +338,8 @@ def compute_price_forecast_30d(
         "status_message_vi": None,
         "anchor_price_vnd": round(anchor_price_vnd, 2),
         "anchor_source": "price_history",
-        "method": "converging_median",
-        "method_label_vi": _METHOD_LABEL_VI["converging_median"],
+        "method": method,
+        "method_label_vi": _METHOD_LABEL_VI[method],
         "confidence": round(float(confidence), 3),
         "forecasts": forecasts,
         "summary": {
@@ -331,5 +352,5 @@ def compute_price_forecast_30d(
             **base["diagnostics"],
             "trend": trend_meta,
         },
-        "model_version": None,
+        "model_version": model_version,
     }

@@ -15,4 +15,4 @@ spark_apps/predictprice/NLP/*
 !spark_apps/predictprice/models/
 spark_apps/predictprice/models/*
 !spark_apps/predictprice/models/smart_price_predictor.pkl
-
+!spark_apps/predictprice/models/temporal_price_forecaster.pkl
