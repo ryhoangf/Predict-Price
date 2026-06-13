@@ -23,6 +23,7 @@ from NLP.title_nlp import resolve_product_ml_identity
 
 _METHOD_LABEL_VI = {
     "history_trend": "xu hướng lịch sử (chỉ giảm hoặc giữ nguyên)",
+    "rolling_median": "trung vị giá 7 ngày gần nhất",
     "none": "chưa đủ dữ liệu",
 }
 
@@ -139,6 +140,31 @@ def _robust_downward_trend_forecast(
         prev = raw_pred
 
     return series, meta
+
+
+def _rolling_median_forecast(
+    history: list[dict[str, Any]],
+    *,
+    horizon_days: int,
+    anchor_date: date,
+    window_days: int = 7,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    prices = [float(row["avg_price"]) for row in history[-window_days:]]
+    level = float(np.median(prices))
+    series = [
+        {
+            "forecast_date": (anchor_date + timedelta(days=day)).isoformat(),
+            "day_offset": day,
+            "predicted_price_vnd": round(level, 2),
+        }
+        for day in range(1, horizon_days + 1)
+    ]
+    return series, {
+        "method_detail": "rolling_median",
+        "window_days": window_days,
+        "points_used": len(prices),
+        "median_price_vnd": round(level, 2),
+    }
 
 
 def build_product_baseline_row(
@@ -266,29 +292,12 @@ def compute_price_forecast_30d(
         }
 
     anchor_price_vnd = float(history_norm[-1]["avg_price"])
-    max_daily = float(cfg.get("max_daily_change_pct", 2.0))
-    max_up_daily = float(cfg.get("max_upward_pct_per_day", 0.0))
-    lookback = int(cfg.get("trend_lookback_days", 14))
-    min_horizon_pct = float(cfg.get("min_horizon_change_pct", -8.0))
-    max_horizon_pct = float(cfg.get("max_horizon_change_pct", 0.0))
-
-    forecasts, trend_meta = _robust_downward_trend_forecast(
+    rolling_window = int(cfg.get("rolling_median_window_days", 7))
+    forecasts, trend_meta = _rolling_median_forecast(
         history_norm,
         horizon_days=horizon,
         anchor_date=anchor_date,
-        anchor_price_vnd=anchor_price_vnd,
-        max_daily_change_pct=max_daily,
-        max_upward_pct_per_day=max_up_daily,
-        lookback_days=lookback,
-    )
-    forecasts = _clip_horizon_change(
-        forecasts,
-        anchor_price=anchor_price_vnd,
-        min_pct=min_horizon_pct,
-        max_pct=max_horizon_pct,
-    )
-    forecasts = _enforce_non_increasing_from_anchor(
-        forecasts, anchor_price=anchor_price_vnd
+        window_days=rolling_window,
     )
 
     confidence = prediction_quality["score"]
@@ -303,8 +312,8 @@ def compute_price_forecast_30d(
         "status_message_vi": None,
         "anchor_price_vnd": round(anchor_price_vnd, 2),
         "anchor_source": "price_history",
-        "method": "history_trend",
-        "method_label_vi": _METHOD_LABEL_VI["history_trend"],
+        "method": "rolling_median",
+        "method_label_vi": _METHOD_LABEL_VI["rolling_median"],
         "confidence": round(float(confidence), 3),
         "forecasts": forecasts,
         "summary": {

@@ -7,6 +7,7 @@
   "min_horizon_change_pct": -8.0,
   "max_horizon_change_pct": 0.0,
   "trend_lookback_days": 14,
+  "rolling_median_window_days": 7,
   "yen_to_vnd": 175,
-  "disclaimer": "Dự báo 30 ngày từ xu hướng price_history (≥14 ngày); điện thoại đã qua sử dụng — không dự báo tăng giá so với hôm nay."
+  "disclaimer": "Mức tham chiếu 30 ngày dùng trung vị giá 7 ngày gần nhất; backtest walk-forward tốt hơn trend giảm và last-value trên dữ liệu hiện tại."
 }

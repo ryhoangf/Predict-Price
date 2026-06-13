@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,17 @@ def _parse_specs(value) -> dict:
         return json.loads(value or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
+
+
+def _storage_gb(value) -> float:
+    text_value = str(value or "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(TB|GB)?", text_value, re.IGNORECASE)
+    if not match:
+        return 64.0
+    amount = float(match.group(1))
+    if (match.group(2) or "").upper() == "TB":
+        amount *= 1024.0
+    return amount if 1 <= amount <= 2048 else 64.0
 
 
 def prepare_panel(history: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -73,11 +85,7 @@ def prepare_panel(history: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     rows["record_date"] = pd.to_datetime(rows["record_date"])
     rows["release_year"] = rows["product_id"].map(release_year)
     rows["storage_gb"] = rows["base_specs"].map(
-        lambda raw: float(
-            str(_parse_specs(raw).get("storage") or "64")
-            .upper().replace("GB", "").replace("TB", "000").strip()
-            or 64
-        )
+        lambda raw: _storage_gb(_parse_specs(raw).get("storage"))
     )
     rows["first_date"] = rows.groupby("product_id")["record_date"].transform("min")
     rows["last_date"] = rows.groupby("product_id")["record_date"].transform("max")
@@ -161,14 +169,37 @@ def train(
         "n_test": int(len(test_rows)),
         "cutoff": pd.Timestamp(cutoff).isoformat(),
     }
+    quality_passed = bool(
+        metrics["r2_retained_value"] >= 0.15
+        and metrics["mae_retained_value"] <= 0.20
+    )
+    quality = {
+        "min_r2_retained_value": 0.15,
+        "max_mae_retained_value": 0.20,
+        "passed": quality_passed,
+    }
+    if not quality_passed:
+        return None, {
+            **sufficiency,
+            "passed": False,
+            "reason": "Longitudinal model failed the predictive quality gate.",
+            "metrics": metrics,
+            "quality_gate": quality,
+        }
     artifact = {
         "model": model,
         "features": FEATURES,
         "metrics": metrics,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "method": "monotonic_retained_value_v1",
+        "quality_gate": quality,
     }
-    return artifact, {**sufficiency, "passed": True, "metrics": metrics}
+    return artifact, {
+        **sufficiency,
+        "passed": True,
+        "metrics": metrics,
+        "quality_gate": quality,
+    }
 
 
 def main() -> int:
