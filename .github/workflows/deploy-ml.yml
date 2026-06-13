@@ -49,13 +49,17 @@ jobs:
             sqlalchemy==2.0.41 \
             pymysql==1.1.1 \
             python-dotenv==1.1.0 \
+            requests==2.32.4 \
             pytest
       - name: Compile ML modules
         run: |
           python -m py_compile \
             spark_apps/predictprice/ml_models/smart_price_predictor.py \
             spark_apps/predictprice/ml_models/train_price_model.py \
-            spark_apps/predictprice/ml_models/depreciation_curve.py
+            spark_apps/predictprice/ml_models/depreciation_curve.py \
+            spark_apps/predictprice/ml_models/build_training_dataset.py \
+            spark_apps/predictprice/ml_models/backtest_price_forecast.py \
+            spark_apps/predictprice/ml_models/train_depreciation_model.py
       - name: Run regression tests
         env:
           PYTHONPATH: spark_apps/predictprice
