@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 import joblib
+import numpy as np
 import pandas as pd
 
 
@@ -12,6 +13,8 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 from ml_models.smart_price_predictor import SmartPricePredictor
+from ml_models.backtest_price_forecast import backtest
+from ml_models.train_depreciation_model import train as train_depreciation
 
 
 def sample_frame():
@@ -113,6 +116,53 @@ class MlPipelineTests(unittest.TestCase):
         known_score = predictor.prediction_quality_scores(known)[0]
         unknown_score = predictor.prediction_quality_scores(unknown)[0]
         self.assertLess(unknown_score, known_score)
+
+    def test_prediction_interval_round_trip(self):
+        frame = sample_frame()
+        predictor = SmartPricePredictor(n_estimators=10, max_depth=5)
+        predictor.fit(frame.iloc[:24], verbose=False)
+        result = predictor.calibrate_prediction_interval(
+            frame.iloc[8:],
+            coverage=0.90,
+        )
+        intervals = predictor.predict_interval(frame.iloc[:2])
+        self.assertGreater(result["radius_yen"], 0)
+        self.assertTrue(np.all(intervals["lower"] <= intervals["prediction"]))
+        self.assertTrue(np.all(intervals["prediction"] <= intervals["upper"]))
+
+    def test_forecast_backtest_compares_baselines(self):
+        dates = pd.date_range("2026-01-01", periods=50, freq="D")
+        history = pd.DataFrame({
+            "product_id": ["p1"] * len(dates),
+            "record_date": dates,
+            "avg_price": np.linspace(10000000, 9000000, len(dates)),
+            "listing_count": 10,
+        })
+        report = backtest(
+            history,
+            min_history=14,
+            horizons=(1, 7, 30),
+            origin_step=3,
+        )
+        self.assertIn("history_trend", report["metrics"])
+        self.assertIn("last_value", report["metrics"])
+        self.assertGreater(report["metrics"]["history_trend"]["1"]["n"], 0)
+
+    def test_depreciation_gate_rejects_short_history(self):
+        panel = pd.DataFrame({
+            "product_id": ["p1"] * 4,
+            "record_date": pd.date_range("2026-01-01", periods=4, freq="D"),
+            "history_points": [4] * 4,
+            "history_span_days": [3] * 4,
+            "retained_value": [1.0, 0.99, 0.98, 0.97],
+            "elapsed_years": [0.0, 0.01, 0.02, 0.03],
+            "device_age_years": [3.0] * 4,
+            "storage_log": [4.8] * 4,
+            "listing_count_log": [2.0] * 4,
+        })
+        artifact, report = train_depreciation(panel)
+        self.assertIsNone(artifact)
+        self.assertFalse(report["passed"])
 
     def test_old_artifact_without_metadata_still_loads(self):
         predictor = SmartPricePredictor(n_estimators=5, max_depth=4)

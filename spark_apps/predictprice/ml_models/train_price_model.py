@@ -38,6 +38,12 @@ def dataset_fingerprint(path: str) -> str:
     return digest.hexdigest()[:16]
 
 
+def read_dataset(path: str) -> pd.DataFrame:
+    if str(path).lower().endswith(".parquet"):
+        return pd.read_parquet(path)
+    return pd.read_csv(path)
+
+
 def clean_training_frame(df: pd.DataFrame, target_col: str = "price") -> pd.DataFrame:
     required = {
         target_col,
@@ -170,9 +176,10 @@ def train_and_evaluate(
     max_depth: int = 25,
     max_mae_ratio_vs_baseline: float = 1.0,
     min_within_20pct: float = 0.60,
+    min_interval_coverage: float = 0.85,
     run_cold_start: bool = True,
 ) -> dict[str, Any]:
-    source = clean_training_frame(pd.read_csv(data_path))
+    source = clean_training_frame(read_dataset(data_path))
     cleaning_report = source.attrs.get("cleaning_report", {})
     train_df, test_df, split = SmartPricePredictor.split_data(
         source,
@@ -181,13 +188,39 @@ def train_and_evaluate(
         strategy=split_strategy,
         time_col=time_col,
     )
+    fit_df, calibration_df, calibration_split = SmartPricePredictor.split_data(
+        train_df,
+        test_size=0.15,
+        random_state=random_state,
+        strategy="temporal" if split["strategy"] == "temporal" else "random",
+        time_col=split.get("time_col"),
+    )
     predictor = SmartPricePredictor(
         n_estimators=n_estimators,
         max_depth=max_depth,
         random_state=random_state,
     )
-    predictor.fit(train_df, verbose=True)
+    predictor.fit(fit_df, verbose=True)
+    interval_calibration = predictor.calibrate_prediction_interval(
+        calibration_df,
+        coverage=0.90,
+    )
     model_metrics = predictor.evaluate(test_df)
+    interval_test = predictor.predict_interval(test_df)
+    actual_test = test_df["price"].to_numpy()
+    interval_metrics = {
+        "coverage": float(np.mean(
+            (actual_test >= interval_test["lower"].to_numpy())
+            & (actual_test <= interval_test["upper"].to_numpy())
+        )),
+        "mean_width_yen": float(np.mean(
+            interval_test["upper"] - interval_test["lower"]
+        )),
+        "median_width_yen": float(np.median(
+            interval_test["upper"] - interval_test["lower"]
+        )),
+        **interval_calibration,
+    }
     baseline_metrics = median_baseline(train_df, test_df)
     mae_ratio = model_metrics["mae"] / max(baseline_metrics["mae"], 1.0)
 
@@ -196,10 +229,13 @@ def train_and_evaluate(
         "min_within_20pct": min_within_20pct,
         "actual_mae_ratio_vs_baseline": mae_ratio,
         "actual_within_20pct": model_metrics["within_20pct"],
+        "min_interval_coverage": min_interval_coverage,
+        "actual_interval_coverage": interval_metrics["coverage"],
     }
     quality_gate["passed"] = bool(
         mae_ratio <= max_mae_ratio_vs_baseline
         and model_metrics["within_20pct"] >= min_within_20pct
+        and interval_metrics["coverage"] >= min_interval_coverage
     )
 
     report = {
@@ -218,7 +254,9 @@ def train_and_evaluate(
             "feature_count": int(len(predictor.feature_columns or [])),
         },
         "split": split,
+        "calibration_split": calibration_split,
         "metrics": model_metrics,
+        "prediction_interval": interval_metrics,
         "median_baseline": baseline_metrics,
         "mae_improvement_vs_baseline_pct": float((1.0 - mae_ratio) * 100.0),
         "metrics_by_brand": metrics_by_group(predictor, test_df, "brand"),
@@ -251,6 +289,8 @@ def train_and_evaluate(
         "trained_at": report["created_at"],
         "dataset_sha256_16": report["dataset"]["sha256_16"],
         "split": split,
+        "calibration_split": calibration_split,
+        "prediction_interval": interval_metrics,
         "quality_gate": quality_gate,
     }
 
@@ -293,6 +333,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=25)
     parser.add_argument("--max-mae-ratio-vs-baseline", type=float, default=1.0)
     parser.add_argument("--min-within-20pct", type=float, default=0.60)
+    parser.add_argument("--min-interval-coverage", type=float, default=0.85)
     parser.add_argument("--skip-cold-start", action="store_true")
     return parser.parse_args()
 
@@ -311,6 +352,7 @@ def main() -> int:
         max_depth=args.max_depth,
         max_mae_ratio_vs_baseline=args.max_mae_ratio_vs_baseline,
         min_within_20pct=args.min_within_20pct,
+        min_interval_coverage=args.min_interval_coverage,
         run_cold_start=not args.skip_cold_start,
     )
     print(json.dumps(_json_value(report), ensure_ascii=False, indent=2))

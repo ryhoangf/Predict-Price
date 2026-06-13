@@ -24,6 +24,8 @@ class SmartPricePredictor:
         self.train_stats_ = None
         self.model_metadata_ = {}
         self.model_price_map = {}
+        self.interval_radius_ = None
+        self.interval_coverage_ = None
         
         # Load từ điển năm ra mắt & Chuẩn bị Regex Vector hóa
         self.release_year_map = self._load_release_years()
@@ -477,6 +479,59 @@ class SmartPricePredictor:
             scores.loc[listing_count < 3] *= 0.70
             scores.loc[(listing_count >= 3) & (listing_count < 10)] *= 0.85
         return scores.clip(lower=0.05, upper=0.90).to_numpy()
+
+    def calibrate_prediction_interval(
+        self,
+        calibration_df,
+        *,
+        target_col='price',
+        coverage=0.90,
+    ):
+        """Calibrate a distribution-free symmetric conformal interval."""
+        y_true = pd.to_numeric(
+            calibration_df[target_col], errors='coerce'
+        )
+        valid = y_true.notna()
+        y_true = y_true.loc[valid].to_numpy()
+        predictions = self.predict(calibration_df.loc[valid])
+        residuals = np.abs(y_true - predictions)
+        n = len(residuals)
+        if n < 20:
+            raise ValueError("At least 20 calibration rows are required.")
+        quantile_level = min(
+            1.0,
+            np.ceil((n + 1) * coverage) / n,
+        )
+        try:
+            radius = np.quantile(
+                residuals,
+                quantile_level,
+                method='higher',
+            )
+        except TypeError:
+            radius = np.quantile(
+                residuals,
+                quantile_level,
+                interpolation='higher',
+            )
+        self.interval_radius_ = float(radius)
+        self.interval_coverage_ = float(coverage)
+        return {
+            'coverage_target': float(coverage),
+            'radius_yen': self.interval_radius_,
+            'n_calibration': int(n),
+        }
+
+    def predict_interval(self, df):
+        if self.interval_radius_ is None:
+            raise ValueError("Prediction interval has not been calibrated.")
+        prediction = self.predict(df)
+        radius = float(self.interval_radius_)
+        return pd.DataFrame({
+            'prediction': prediction,
+            'lower': np.maximum(0.0, prediction - radius),
+            'upper': prediction + radius,
+        }, index=df.index)
     
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -485,6 +540,8 @@ class SmartPricePredictor:
             'feature_importance': self.feature_importance_, 'train_stats': self.train_stats_,
             'model_price_map': self.model_price_map,
             'model_metadata': self.model_metadata_,
+            'interval_radius': self.interval_radius_,
+            'interval_coverage': self.interval_coverage_,
         }, path)
         print(f"Model saved to {path}")
     
@@ -496,6 +553,8 @@ class SmartPricePredictor:
         self.train_stats_ = data.get('train_stats')
         self.model_price_map = data.get('model_price_map', {})
         self.model_metadata_ = data.get('model_metadata', {})
+        self.interval_radius_ = data.get('interval_radius')
+        self.interval_coverage_ = data.get('interval_coverage')
 
 class EnsemblePricePredictor:
     def __init__(self, **kwargs):
