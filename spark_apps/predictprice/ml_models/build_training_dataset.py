@@ -112,7 +112,15 @@ def build_dataset(
         .fillna(object_id_time)
     )
 
-    frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
+    frame["price"] = pd.to_numeric(
+        frame["price"].astype("string").str.replace(
+            r"[¥￥円,\s]|YEN",
+            "",
+            regex=True,
+            case=False,
+        ),
+        errors="coerce",
+    )
     frame = frame[frame["price"].between(min_price, max_price)]
     frame = frame.dropna(subset=["brand", "model_line", "model_number", "event_at"])
     frame = frame.sort_values(["event_at", "link"])
