@@ -31,6 +31,22 @@ _DEPRECIATION_BRANDS = [
     "apple", "samsung", "google", "sony", "sharp", "xiaomi",
     "oppo", "motorola", "huawei", "asus",
 ]
+_DEPRECIATION_FAMILIES = [
+    "iphone", "galaxy_s", "galaxy_a", "pixel", "xperia", "aquos",
+    "redmi", "xiaomi", "oppo", "moto", "huawei", "zenfone", "other",
+]
+
+
+def _depreciation_model_family(value: object) -> str:
+    text_value = str(value or "").strip().lower()
+    rules = [
+        ("iphone", "iphone"), ("galaxy s", "galaxy_s"),
+        ("galaxy a", "galaxy_a"), ("pixel", "pixel"), ("xperia", "xperia"),
+        ("aquos", "aquos"), ("redmi", "redmi"), ("xiaomi", "xiaomi"),
+        ("oppo", "oppo"), ("moto", "moto"), ("huawei", "huawei"),
+        ("zenfone", "zenfone"),
+    ]
+    return next((family for token, family in rules if token in text_value), "other")
 
 
 def _depreciation_storage_gb(value: object) -> float:
@@ -53,8 +69,10 @@ def _depreciation_feature_row(
     storage: object,
     listing_count: float,
     brand: str,
+    model_series: object = "",
 ) -> dict[str, float]:
     normalized_brand = str(brand or "").strip().lower()
+    family = _depreciation_model_family(model_series)
     return {
         "device_age_years": float(max(device_age_years, 0.0)),
         "storage_log": float(np.log1p(_depreciation_storage_gb(storage))),
@@ -62,6 +80,10 @@ def _depreciation_feature_row(
         **{
             f"brand_{known}": float(normalized_brand == known)
             for known in _DEPRECIATION_BRANDS
+        },
+        **{
+            f"family_{known}": float(family == known)
+            for known in _DEPRECIATION_FAMILIES
         },
     }
 
@@ -345,6 +367,7 @@ def dedicated_depreciation_curve_vnd(
     age_max: float,
     age_step: float,
     max_annual_drop_pct: float = 20.0,
+    model_series: object = "",
 ) -> tuple[list[float], list[float], dict[str, float]]:
     ages: list[float] = []
     rows: list[dict[str, float]] = []
@@ -356,6 +379,7 @@ def dedicated_depreciation_curve_vnd(
             storage=storage,
             listing_count=listing_count,
             brand=brand,
+            model_series=model_series,
         ))
         age += age_step
     matrix = pd.DataFrame(rows)[artifact["features"]]
@@ -509,6 +533,7 @@ def compute_depreciation_curve_response(
         ages, vnd, depreciation_meta = dedicated_depreciation_curve_vnd(
             depreciation_artifact,
             brand=str(raw_row.get("brand") or ""),
+            model_series=raw_row.get("model_line"),
             storage=raw_row.get("storage"),
             listing_count=float(anchor_info.get("listing_count") or 0),
             anchor_vnd=float(anchor_info["anchor_price_vnd"]),

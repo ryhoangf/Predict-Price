@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sqlalchemy import create_engine, text
 
 import config as cfg
@@ -33,6 +33,29 @@ FEATURES = [
     "listing_count_log",
     *[f"brand_{brand}" for brand in BRANDS],
 ]
+MODEL_FAMILIES = [
+    "iphone", "galaxy_s", "galaxy_a", "pixel", "xperia", "aquos",
+    "redmi", "xiaomi", "oppo", "moto", "huawei", "zenfone", "other",
+]
+
+
+def model_family(value: object) -> str:
+    text_value = str(value or "").strip().lower()
+    rules = [
+        ("iphone", "iphone"),
+        ("galaxy s", "galaxy_s"),
+        ("galaxy a", "galaxy_a"),
+        ("pixel", "pixel"),
+        ("xperia", "xperia"),
+        ("aquos", "aquos"),
+        ("redmi", "redmi"),
+        ("xiaomi", "xiaomi"),
+        ("oppo", "oppo"),
+        ("moto", "moto"),
+        ("huawei", "huawei"),
+        ("zenfone", "zenfone"),
+    ]
+    return next((family for token, family in rules if token in text_value), "other")
 
 
 def _parse_specs(value) -> dict:
@@ -60,8 +83,10 @@ def feature_row(
     storage: object,
     listing_count: float,
     brand: str,
+    model_series: object = "",
 ) -> dict[str, float]:
     normalized_brand = str(brand or "").strip().lower()
+    family = model_family(model_series)
     return {
         "device_age_years": float(max(device_age_years, 0.0)),
         "storage_log": float(np.log1p(storage_gb(storage))),
@@ -70,7 +95,14 @@ def feature_row(
             f"brand_{known}": float(normalized_brand == known)
             for known in BRANDS
         },
+        **{
+            f"family_{known}": float(family == known)
+            for known in MODEL_FAMILIES
+        },
     }
+
+
+FEATURES.extend([f"family_{family}" for family in MODEL_FAMILIES])
 
 
 def prepare_panel(history: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -121,6 +153,7 @@ def prepare_panel(history: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             storage=row.storage,
             listing_count=row.listing_count,
             brand=row.brand,
+            model_series=row.model_series,
         )
         for row in rows.itertuples()
     ], index=rows.index)
@@ -161,11 +194,11 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
             "passed": False,
             "reason": "Need at least 100 products and 500 catalog snapshots.",
         }
-    train_rows, test_rows = train_test_split(
-        panel,
-        test_size=0.20,
-        random_state=42,
-    )
+    groups = panel["model_series"].fillna(panel["name"]).astype(str)
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+    train_index, test_index = next(splitter.split(panel, groups=groups))
+    train_rows = panel.iloc[train_index]
+    test_rows = panel.iloc[test_index]
     model = HistGradientBoostingRegressor(
         loss="absolute_error",
         learning_rate=0.04,
@@ -202,6 +235,9 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
         "passed": quality_gate["passed"],
         "n_train": int(len(train_rows)),
         "n_test": int(len(test_rows)),
+        "split": "group_holdout_by_model_series",
+        "train_model_series": int(groups.iloc[train_index].nunique()),
+        "test_model_series": int(groups.iloc[test_index].nunique()),
         "metrics": {
             "model": model_metrics,
             "brand_median_baseline": baseline_metrics,
@@ -215,6 +251,7 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
         "model": model,
         "features": FEATURES,
         "brands": BRANDS,
+        "model_families": MODEL_FAMILIES,
         "metrics": report["metrics"],
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "method": "monotonic_hedonic_depreciation_v2",

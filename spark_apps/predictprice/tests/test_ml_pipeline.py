@@ -28,6 +28,8 @@ from ml_models.temporal_price_forecaster import (
     build_feature_row,
 )
 from ml_models.train_price_forecaster import build_supervised_rows
+from ml_models.feature_impact import counterfactual_impact_report
+from ml_models.train_counterfactual_effects import train as train_effects
 
 
 def sample_frame():
@@ -337,6 +339,59 @@ class MlPipelineTests(unittest.TestCase):
         self.assertEqual(len(points), 3)
         self.assertLess(points[0]["lower_price_vnd"], points[0]["predicted_price_vnd"])
         self.assertLess(points[0]["predicted_price_vnd"], points[0]["upper_price_vnd"])
+
+    def test_temporal_forecaster_applies_horizon_conformal_interval(self):
+        class ConstantModel:
+            def predict(self, matrix):
+                return np.zeros(len(matrix))
+
+        forecaster = TemporalPriceForecaster({
+            "model": ConstantModel(),
+            "features": FORECAST_FEATURES,
+            "conformal_log_residuals": {
+                "1-3": {"lower": -0.10, "upper": 0.15, "n": 100},
+            },
+        })
+        history = [
+            {"record_date": day.date(), "avg_price": 100, "listing_count": 10}
+            for day in pd.date_range("2026-01-01", periods=14)
+        ]
+        points, meta = forecaster.predict(
+            history,
+            horizon_days=2,
+            anchor_date=pd.Timestamp("2026-01-14").date(),
+        )
+        self.assertLess(points[0]["lower_price_vnd"], 100)
+        self.assertGreater(points[0]["upper_price_vnd"], 100)
+        self.assertEqual(
+            meta["interval_method"], "quantile_gradient_boosting"
+        )
+
+    def test_counterfactual_effect_training_requires_matched_models(self):
+        rows = []
+        for model_index in range(10):
+            for has_box, adjustment in [(False, 0), (True, 1000)]:
+                for repeat in range(3):
+                    rows.append({
+                        "price": 10000 + model_index * 100 + adjustment + repeat,
+                        "brand": "Apple",
+                        "model_line": "iPhone",
+                        "model_number": str(model_index),
+                        "variant": "",
+                        "storage": "128",
+                        "has_box": has_box,
+                        "has_charger": has_box,
+                        "has_scratches": not has_box,
+                        "has_damage": not has_box,
+                        "screen_condition": "clean" if has_box else "scratched",
+                        "body_condition": "good" if has_box else "fair",
+                        "battery_percentage": 95 if has_box else 80,
+                    })
+        artifact, report = train_effects(pd.DataFrame(rows))
+        self.assertTrue(report["passed"])
+        effect = artifact["effects"]["has_box_true"]["global"]
+        self.assertGreater(effect["effect_yen"], 900)
+        self.assertEqual(effect["matched_groups"], 10)
 
     def test_old_artifact_without_metadata_still_loads(self):
         predictor = SmartPricePredictor(n_estimators=5, max_depth=4)

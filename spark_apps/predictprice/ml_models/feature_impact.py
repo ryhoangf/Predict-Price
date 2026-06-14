@@ -5,14 +5,48 @@ delta_yen > 0: nâng yếu tố lên mức tham chiếu làm giá dự báo tăn
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import pandas as pd
+import joblib
 
 from ml_models.smart_price_predictor import SmartPricePredictor
 
 DEFAULT_YEN_TO_VND = 175
+DEFAULT_EFFECTS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "models",
+    "counterfactual_effects.pkl",
+)
+
+
+def _load_effects(path: str | None = None) -> dict[str, Any] | None:
+    artifact_path = path or DEFAULT_EFFECTS_PATH
+    if not os.path.exists(artifact_path):
+        return None
+    try:
+        return joblib.load(artifact_path)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _evidence_for(
+    artifact: dict[str, Any] | None,
+    scenario_id: str,
+    brand: object,
+) -> dict[str, Any] | None:
+    if not artifact:
+        return None
+    scenario = (artifact.get("effects") or {}).get(scenario_id)
+    if not scenario:
+        return None
+    normalized_brand = str(brand or "").strip().lower()
+    return (
+        (scenario.get("by_brand") or {}).get(normalized_brand)
+        or scenario.get("global")
+    )
 
 
 def _as_int_flag(v: Any) -> int:
@@ -94,9 +128,11 @@ def counterfactual_impact_report(
     *,
     yen_to_vnd: float = DEFAULT_YEN_TO_VND,
     include_all_scenarios: bool = False,
+    effects_path: str | None = None,
 ) -> dict[str, Any]:
     base = {k: v for k, v in raw_row.items() if v is not None}
     base_yen = predict_yen(predictor, base)
+    evidence_artifact = _load_effects(effects_path)
     impacts = []
     for sc in _default_scenarios():
         if not include_all_scenarios and not sc.should_run(base):
@@ -111,7 +147,38 @@ def counterfactual_impact_report(
             alt[sc.field] = sc.reference
 
         alt_yen = predict_yen(predictor, alt)
-        delta_yen = float(alt_yen - base_yen)
+        model_delta_yen = float(alt_yen - base_yen)
+        evidence = _evidence_for(
+            evidence_artifact, sc.id, base.get("brand")
+        )
+        stability = float((evidence or {}).get("stable_direction") or 0.5)
+        if (
+            evidence
+            and int(evidence.get("matched_groups") or 0) >= 8
+            and stability >= 0.65
+        ):
+            empirical_delta = float(evidence["effect_yen"])
+            if sc.id == "battery_to_100":
+                battery_gap = max(0.0, 100.0 - float(before_val or 80.0))
+                empirical_delta *= min(1.0, battery_gap / 20.0)
+            empirical_weight = min(0.80, max(0.50, stability))
+            delta_yen = (
+                empirical_weight * empirical_delta
+                + (1.0 - empirical_weight) * model_delta_yen
+            )
+            lower_yen = float(evidence["lower_yen"])
+            upper_yen = float(evidence["upper_yen"])
+            support = "strong" if evidence["matched_groups"] >= 30 else "moderate"
+        elif evidence:
+            delta_yen = model_delta_yen
+            lower_yen = float(evidence["lower_yen"])
+            upper_yen = float(evidence["upper_yen"])
+            support = "uncertain"
+        else:
+            delta_yen = model_delta_yen
+            lower_yen = None
+            upper_yen = None
+            support = "model_only"
         delta_vnd = round(delta_yen * float(yen_to_vnd), 2)
         # delta > 0: nâng yếu tố lên chuẩn → giá tăng → trạng thái hiện tại đang "thiệt" |delta|
         deficit_vnd = round(max(0.0, delta_vnd), 2)
@@ -123,9 +190,22 @@ def counterfactual_impact_report(
             "value_before": before_val,
             "value_reference": sc.reference,
             "delta_yen": round(delta_yen, 2),
+            "model_delta_yen": round(model_delta_yen, 2),
             "delta_vnd": delta_vnd,
             "deficit_vnd": deficit_vnd,
             "gain_if_fixed_vnd": gain_if_fixed_vnd,
+            "evidence_support": support,
+            "matched_groups": int(evidence.get("matched_groups") or 0)
+            if evidence else 0,
+            "evidence_direction_agreement": round(stability, 3)
+            if evidence else None,
+            "interval_vnd": (
+                {
+                    "lower": round(lower_yen * float(yen_to_vnd), 2),
+                    "upper": round(upper_yen * float(yen_to_vnd), 2),
+                }
+                if lower_yen is not None and upper_yen is not None else None
+            ),
             "message_vi": _impact_message_vi(
                 sc.label_vi, before_val, sc.reference, deficit_vnd, delta_vnd
             ),
@@ -133,10 +213,17 @@ def counterfactual_impact_report(
 
     return {
         "method": "counterfactual",
+        "estimator": (
+            "matched_evidence_plus_model_counterfactual_v2"
+            if evidence_artifact else "model_counterfactual_v1"
+        ),
         "baseline_prediction_yen": round(base_yen, 2),
         "baseline_prediction_vnd": round(base_yen * float(yen_to_vnd), 2),
         "yen_to_vnd": float(yen_to_vnd),
         "impacts": impacts,
+        "evidence_trained_at": (
+            evidence_artifact.get("trained_at") if evidence_artifact else None
+        ),
         "disclaimer": (
             "Mỗi dòng chỉ đổi một yếu tố so với mức tham chiếu; "
             "deficit_vnd = mức thiệt so với chuẩn (không cộng tuyến tính khi sửa nhiều yếu tố cùng lúc)."

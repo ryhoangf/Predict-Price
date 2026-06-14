@@ -14,7 +14,11 @@ from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingRegr
 from sqlalchemy import create_engine, text
 
 import config as cfg
-from ml_models.temporal_price_forecaster import FEATURES, build_feature_row
+from ml_models.temporal_price_forecaster import (
+    FEATURES,
+    build_feature_row,
+    horizon_bucket,
+)
 
 
 MYSQL_URI = (
@@ -77,6 +81,36 @@ def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     }
 
 
+def _balanced_weights(rows: pd.DataFrame) -> np.ndarray:
+    counts = rows.groupby("product_id")["product_id"].transform("count")
+    return (1.0 / np.sqrt(counts.clip(lower=1))).to_numpy(dtype=float)
+
+
+def _conformal_residuals(
+    calibration_rows: pd.DataFrame,
+    predicted_log_ratio: np.ndarray,
+    *,
+    coverage: float = 0.80,
+) -> dict[str, dict[str, float]]:
+    residual = (
+        calibration_rows["target_log_ratio"].to_numpy(dtype=float)
+        - np.asarray(predicted_log_ratio, dtype=float)
+    )
+    alpha = (1.0 - coverage) / 2.0
+    output: dict[str, dict[str, float]] = {}
+    buckets = calibration_rows["horizon_days"].map(horizon_bucket)
+    for name in ["global", *sorted(buckets.unique())]:
+        values = residual if name == "global" else residual[buckets.to_numpy() == name]
+        if len(values) < 50:
+            continue
+        output[name] = {
+            "lower": float(np.quantile(values, alpha, method="lower")),
+            "upper": float(np.quantile(values, 1.0 - alpha, method="higher")),
+            "n": int(len(values)),
+        }
+    return output
+
+
 def train(
     samples: pd.DataFrame,
     *,
@@ -85,11 +119,17 @@ def train(
     if len(samples) < 500:
         return None, {"passed": False, "reason": "Need at least 500 temporal samples."}
     samples = samples.sort_values(["target_date", "product_id", "origin_date"]).reset_index(drop=True)
-    cutoff_index = max(1, int(len(samples) * (1.0 - test_fraction)))
-    cutoff = samples.iloc[cutoff_index]["target_date"]
-    train_rows = samples[samples["target_date"] < cutoff]
-    test_rows = samples[samples["target_date"] >= cutoff]
-    if len(train_rows) < 300 or len(test_rows) < 100:
+    test_index = max(2, int(len(samples) * (1.0 - test_fraction)))
+    calibration_index = max(1, int(test_index * 0.85))
+    calibration_cutoff = samples.iloc[calibration_index]["target_date"]
+    test_cutoff = samples.iloc[test_index]["target_date"]
+    train_rows = samples[samples["target_date"] < calibration_cutoff]
+    calibration_rows = samples[
+        (samples["target_date"] >= calibration_cutoff)
+        & (samples["target_date"] < test_cutoff)
+    ]
+    test_rows = samples[samples["target_date"] >= test_cutoff]
+    if len(train_rows) < 300 or len(calibration_rows) < 100 or len(test_rows) < 100:
         return None, {"passed": False, "reason": "Temporal split is too small."}
 
     model = HistGradientBoostingRegressor(
@@ -121,9 +161,15 @@ def train(
     )
     x_train = train_rows[FEATURES]
     y_train = train_rows["target_log_ratio"]
-    model.fit(x_train, y_train)
-    lower_model.fit(x_train, y_train)
-    upper_model.fit(x_train, y_train)
+    sample_weight = _balanced_weights(train_rows)
+    model.fit(x_train, y_train, sample_weight=sample_weight)
+    lower_model.fit(x_train, y_train, sample_weight=sample_weight)
+    upper_model.fit(x_train, y_train, sample_weight=sample_weight)
+
+    conformal = _conformal_residuals(
+        calibration_rows,
+        model.predict(calibration_rows[FEATURES]),
+    )
 
     x_test = test_rows[FEATURES]
     anchor = test_rows["anchor_price"].to_numpy(dtype=float)
@@ -137,6 +183,22 @@ def train(
 
     lower = anchor * np.exp(lower_model.predict(x_test))
     upper = anchor * np.exp(upper_model.predict(x_test))
+    center_log = model.predict(x_test)
+    for bucket_name, indexes in test_rows.groupby(
+        test_rows["horizon_days"].map(horizon_bucket)
+    ).groups.items():
+        correction = conformal.get(bucket_name) or conformal.get("global")
+        if not correction:
+            continue
+        positions = test_rows.index.get_indexer(indexes)
+        lower[positions] = np.minimum(
+            lower[positions],
+            anchor[positions] * np.exp(center_log[positions] + correction["lower"]),
+        )
+        upper[positions] = np.maximum(
+            upper[positions],
+            anchor[positions] * np.exp(center_log[positions] + correction["upper"]),
+        )
     interval_coverage = float(np.mean((actual >= lower) & (actual <= upper)))
     best_baseline_mae = min(last_metrics["mae_vnd"], median_metrics["mae_vnd"])
     mae_ratio = model_metrics["mae_vnd"] / max(best_baseline_mae, 1.0)
@@ -155,8 +217,10 @@ def train(
     )
     report = {
         "passed": quality_gate["passed"],
-        "cutoff": str(cutoff),
+        "calibration_cutoff": str(calibration_cutoff),
+        "test_cutoff": str(test_cutoff),
         "n_train": int(len(train_rows)),
+        "n_calibration": int(len(calibration_rows)),
         "n_test": int(len(test_rows)),
         "products": int(samples["product_id"].nunique()),
         "date_min": str(samples["target_date"].min()),
@@ -177,12 +241,14 @@ def train(
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "metrics": report["metrics"],
         "quality_gate": quality_gate,
+        "interval_method": "quantile_models_plus_horizon_conformal_v2",
     }
     return {
         "model": model,
         "lower_model": lower_model,
         "upper_model": upper_model,
         "features": FEATURES,
+        "conformal_log_residuals": conformal,
         "metadata": metadata,
     }, report
 

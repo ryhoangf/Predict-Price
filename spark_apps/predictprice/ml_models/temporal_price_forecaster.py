@@ -35,6 +35,15 @@ FEATURES = [
     "slope_pct_per_day_14",
 ]
 
+HORIZON_BUCKETS = ((1, 3), (4, 7), (8, 14), (15, 30))
+
+
+def horizon_bucket(day: int) -> str:
+    for lower, upper in HORIZON_BUCKETS:
+        if lower <= int(day) <= upper:
+            return f"{lower}-{upper}"
+    return "31+"
+
 
 def _as_date(value: Any) -> date:
     if isinstance(value, datetime):
@@ -175,6 +184,7 @@ class TemporalPriceForecaster:
             self.upper_model.predict(matrix) if self.upper_model is not None
             else center_log_ratio
         )
+        conformal = self.artifact.get("conformal_log_residuals") or {}
         cap = max_change_pct / 100.0
         lower_ratio_cap = max(0.01, 1.0 - cap)
         upper_ratio_cap = 1.0 + cap
@@ -185,6 +195,16 @@ class TemporalPriceForecaster:
             lower_log_ratio,
             upper_log_ratio,
         ):
+            correction = conformal.get(horizon_bucket(day)) or conformal.get("global")
+            if correction:
+                lower_raw = min(
+                    float(lower_raw),
+                    float(center_raw) + float(correction["lower"]),
+                )
+                upper_raw = max(
+                    float(upper_raw),
+                    float(center_raw) + float(correction["upper"]),
+                )
             center_ratio = float(np.clip(np.exp(center_raw), lower_ratio_cap, upper_ratio_cap))
             lower_ratio = float(np.clip(np.exp(lower_raw), lower_ratio_cap, center_ratio))
             upper_ratio = float(np.clip(np.exp(upper_raw), center_ratio, upper_ratio_cap))
@@ -202,6 +222,9 @@ class TemporalPriceForecaster:
             "trained_at": self.metadata.get("trained_at"),
             "training_metrics": self.metadata.get("metrics"),
             "quality_gate": self.metadata.get("quality_gate"),
+            "interval_method": self.metadata.get(
+                "interval_method", "quantile_gradient_boosting"
+            ),
             "max_horizon_change_pct": max_change_pct,
         }
 
