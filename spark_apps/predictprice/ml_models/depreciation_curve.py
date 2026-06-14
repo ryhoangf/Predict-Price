@@ -384,6 +384,14 @@ def dedicated_depreciation_curve_vnd(
         age += age_step
     matrix = pd.DataFrame(rows)[artifact["features"]]
     raw_log_prices = np.asarray(artifact["model"].predict(matrix), dtype=float)
+    raw_lower_log = (
+        np.asarray(artifact["lower_model"].predict(matrix), dtype=float)
+        if artifact.get("lower_model") is not None else raw_log_prices
+    )
+    raw_upper_log = (
+        np.asarray(artifact["upper_model"].predict(matrix), dtype=float)
+        if artifact.get("upper_model") is not None else raw_log_prices
+    )
     slopes = []
     for left in range(len(ages)):
         for right in range(left + 1, len(ages)):
@@ -395,9 +403,36 @@ def dedicated_depreciation_curve_vnd(
     raw_slope = float(np.median(slopes)) if slopes else 0.0
     min_log_slope = float(np.log1p(-max_annual_drop_pct / 100.0))
     applied_slope = float(np.clip(raw_slope, min_log_slope, 0.0))
+    interval_slopes = []
+    for predictions in (raw_lower_log, raw_upper_log):
+        candidate_slopes = []
+        for left in range(len(ages)):
+            for right in range(left + 1, len(ages)):
+                delta_age = ages[right] - ages[left]
+                if delta_age > 0:
+                    candidate_slopes.append(
+                        (predictions[right] - predictions[left]) / delta_age
+                    )
+        candidate = float(np.median(candidate_slopes)) if candidate_slopes else 0.0
+        interval_slopes.append(float(np.clip(candidate, min_log_slope, 0.0)))
     prices = [
         float(anchor_vnd) * float(np.exp(applied_slope * (age - age_now)))
         for age in ages
+    ]
+    candidate_curves = [
+        [
+            float(anchor_vnd) * float(np.exp(slope * (age - age_now)))
+            for age in ages
+        ]
+        for slope in [applied_slope, *interval_slopes]
+    ]
+    lower_prices = [
+        min(curve[index] for curve in candidate_curves)
+        for index in range(len(ages))
+    ]
+    upper_prices = [
+        max(curve[index] for curve in candidate_curves)
+        for index in range(len(ages))
     ]
     return ages, prices, {
         "raw_annual_depreciation_pct": round(
@@ -407,6 +442,9 @@ def dedicated_depreciation_curve_vnd(
             (1.0 - float(np.exp(applied_slope))) * 100.0, 3
         ),
         "max_annual_drop_safety_pct": max_annual_drop_pct,
+        "lower_prices_vnd": lower_prices,
+        "upper_prices_vnd": upper_prices,
+        "interval": "P10-P90 model slope range",
     }
 
 
@@ -570,6 +608,8 @@ def compute_depreciation_curve_response(
         "product_id": product_id,
         "ages_years": ages,
         "prices_vnd": vnd,
+        "lower_prices_vnd": depreciation_meta.pop("lower_prices_vnd", None),
+        "upper_prices_vnd": depreciation_meta.pop("upper_prices_vnd", None),
         "prices_yen": prices_yen_chart,
         "prices_yen_ml_raw": yen_ml_raw,
         "yen_to_vnd": yen_to_vnd,

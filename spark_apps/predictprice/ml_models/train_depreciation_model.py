@@ -212,6 +212,37 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
     model.fit(train_rows[FEATURES], train_rows["target_log_price"])
     prediction = model.predict(test_rows[FEATURES])
     model_metrics = _metrics(test_rows["target_log_price"].to_numpy(), prediction)
+    lower_model = HistGradientBoostingRegressor(
+        loss="quantile",
+        quantile=0.10,
+        learning_rate=0.04,
+        max_iter=400,
+        max_leaf_nodes=31,
+        min_samples_leaf=20,
+        l2_regularization=2.0,
+        monotonic_cst=[-1, *([0] * (len(FEATURES) - 1))],
+        random_state=42,
+    )
+    upper_model = HistGradientBoostingRegressor(
+        loss="quantile",
+        quantile=0.90,
+        learning_rate=0.04,
+        max_iter=400,
+        max_leaf_nodes=31,
+        min_samples_leaf=20,
+        l2_regularization=2.0,
+        monotonic_cst=[-1, *([0] * (len(FEATURES) - 1))],
+        random_state=42,
+    )
+    lower_model.fit(train_rows[FEATURES], train_rows["target_log_price"])
+    upper_model.fit(train_rows[FEATURES], train_rows["target_log_price"])
+    actual_log = test_rows["target_log_price"].to_numpy(dtype=float)
+    lower_log = lower_model.predict(test_rows[FEATURES])
+    upper_log = upper_model.predict(test_rows[FEATURES])
+    interval_coverage = float(np.mean(
+        (actual_log >= np.minimum(lower_log, upper_log))
+        & (actual_log <= np.maximum(lower_log, upper_log))
+    ))
 
     brand_medians = train_rows.groupby("brand")["target_log_price"].median()
     global_median = float(train_rows["target_log_price"].median())
@@ -225,11 +256,14 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
         "actual_mae_ratio_vs_brand_baseline": float(mae_ratio),
         "actual_r2_log_price": model_metrics["r2_log_price"],
         "actual_within_20pct": model_metrics["within_20pct"],
+        "min_interval_coverage": 0.70,
+        "actual_interval_coverage": interval_coverage,
     }
     quality_gate["passed"] = bool(
         mae_ratio <= quality_gate["max_mae_ratio_vs_brand_baseline"]
         and model_metrics["r2_log_price"] >= quality_gate["min_r2_log_price"]
         and model_metrics["within_20pct"] >= quality_gate["min_within_20pct"]
+        and interval_coverage >= quality_gate["min_interval_coverage"]
     )
     report = {
         "passed": quality_gate["passed"],
@@ -241,6 +275,7 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
         "metrics": {
             "model": model_metrics,
             "brand_median_baseline": baseline_metrics,
+            "interval_80_coverage": interval_coverage,
         },
         "quality_gate": quality_gate,
     }
@@ -249,12 +284,14 @@ def train(panel: pd.DataFrame, **_ignored) -> tuple[dict | None, dict]:
         return None, report
     return {
         "model": model,
+        "lower_model": lower_model,
+        "upper_model": upper_model,
         "features": FEATURES,
         "brands": BRANDS,
         "model_families": MODEL_FAMILIES,
         "metrics": report["metrics"],
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "method": "monotonic_hedonic_depreciation_v2",
+        "method": "monotonic_hedonic_depreciation_v3_quantile",
         "quality_gate": quality_gate,
     }, report
 
